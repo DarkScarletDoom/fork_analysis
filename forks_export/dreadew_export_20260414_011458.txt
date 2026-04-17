@@ -1,0 +1,2979 @@
+================================================================================
+ЭКСПОРТ РЕПОЗИТОРИЯ: dreadew
+Путь: C:\Users\vladk\Desktop\test\forks\dreadew
+Дата экспорта: 2026-04-14 01:14:58
+================================================================================
+
+
+================================================================================
+📁 ПАПКА: dreadew/
+================================================================================
+
+[ПРОПУЩЕН] .dockerignore (бинарный/служебный/слишком большой)
+
+[ПРОПУЩЕН] .gitignore (бинарный/служебный/слишком большой)
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: Dockerfile
+Размер: 414 байт
+────────────────────────────────────────────────────────────────────────────────
+FROM golang:1.23.0-alpine AS builder
+
+WORKDIR /src
+
+RUN apk add --no-cache ca-certificates
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/taskservice ./cmd/api
+
+FROM alpine:3.21
+
+WORKDIR /app
+
+RUN apk add --no-cache ca-certificates
+
+COPY --from=builder /out/taskservice /app/taskservice
+
+EXPOSE 8080
+
+CMD ["/app/taskservice"]
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: README.md
+Размер: 13,941 байт
+────────────────────────────────────────────────────────────────────────────────
+# Task Service
+
+Сервис для управления задачами с HTTP API на Go.
+
+---
+
+## Задача
+
+**Суть:** Добавить возможность задавать настройки периодичности задачи.
+
+**Проблема:** Многие задачи для персонала периодические. Кому-то необходимо выполнять ежедневный обзвон пациентов, кто-то по чётным дням занимается формированием отчетности, а кто-то проводит еженедельные инвентаризации.
+
+### Реализованные типы периодичности
+
+| Тип | Описание | Параметры |
+|-----|----------|-----------|
+| `none` | Без повторения | — |
+| `daily` | Ежедневно (каждый N-й день) | `recurrence_interval` (int > 0) |
+| `monthly` | Ежемесячно (конкретное число) | `recurrence_day` (1-30) |
+| `specific_dates` | На конкретные даты | `recurrence_dates` ([]string, формат YYYY-MM-DD) |
+| `even_odd` | Чётные/нечётные дни | `recurrence_even_odd` (true=чётные, false=нечётные) |
+
+### План реализации фичи
+
+#### 1. Миграция БД
+
+Добавить поля в таблицу `tasks`:
+
+```sql
+-- recurrence_type: none, daily, monthly, specific_dates, even_odd
+-- recurrence_interval: для daily (каждые N дней)
+-- recurrence_day: для monthly (день месяца 1-30), для even_odd (0=even, 1=odd)
+-- recurrence_dates: для specific_dates (массив дат JSON)
+```
+
+#### 2. Доменный слой (internal/domain/task/task.go)
+
+Добавить типы:
+
+```go
+type RecurrenceType string
+
+const (
+    RecurrenceNone        RecurrenceType = "none"
+    RecurrenceDaily       RecurrenceType = "daily"
+    RecurrenceMonthly     RecurrenceType = "monthly"
+    RecurrenceSpecific    RecurrenceType = "specific_dates"
+    RecurrenceEvenOdd     RecurrenceType = "even_odd"
+)
+
+type Task struct {
+    // ... существующие поля
+    RecurrenceType   RecurrenceType   `json:"recurrence_type"`
+    RecurrenceInterval *int            `json:"recurrence_interval,omitempty"` // для daily
+    RecurrenceDay     *int            `json:"recurrence_day,omitempty"`     // для monthly (1-30)
+    RecurrenceEvenOdd *bool           `json:"recurrence_even_odd,omitempty"` // true=even, false=odd
+    RecurrenceDates  []string         `json:"recurrence_dates,omitempty"`   // для specific_dates (ISO dates)
+}
+```
+
+#### 3. DTO слой (internal/transport/http/handlers/dto.go)
+
+Обновить `taskMutationDTO` и `taskDTO` с новыми полями.
+
+#### 4. Repository (internal/repository/postgres/task_repository.go)
+
+Обновить все SQL-запросы (Create, GetByID, Update, List) для работы с новыми полями.
+
+#### 5. UseCase (internal/usecase/task/ports.go)
+
+Добавить валидацию в `CreateInput`/`UpdateInput`:
+- daily: interval > 0
+- monthly: day in 1..30
+- specific_dates: dates valid ISO format, not empty
+- even_odd: требует флаг
+
+#### 6. API изменения
+
+Для создания/обновления задачи:
+
+```json
+{
+  "title": "Ежедневный обзвон",
+  "description": "...",
+  "status": "new",
+  "recurrence_type": "daily",
+  "recurrence_interval": 1
+}
+```
+
+#### 7. Генерация задач
+
+Отдельный фоновый сервис (горутина), который:
+- Периодически (по таймеру, например каждые 5 минут) сканирует таблицу `tasks`
+- Находит задачи с `recurrence_type != 'none'`
+- На основе настроек периодичности вычисляет даты для создания конкретных задач
+- Создаёт новые записи в таблице `tasks` (как обычные задачи, но без recurrence полей)
+- Логика определения дат:
+  - **daily**: текущая дата + N * interval, начиная с даты создания шаблона
+  - **monthly**: текущий месяц + день = recurrence_day, затем следующий месяц
+  - **specific_dates**: фильтрация recurrence_dates где дата >= сегодня и задача ещё не создана
+  - **even_odd**: чётные/нечётные дни текущего месяца
+
+Пример структуры сервиса:
+```go
+type Generator struct {
+    repo    Repository
+    ticker  *time.Ticker
+    done    chan struct{}
+}
+
+func (g *Generator) Start(ctx context.Context) {
+    g.ticker = time.NewTicker(5 * time.Minute)
+    defer g.ticker.Stop()
+    
+    for {
+        select {
+        case <-ctx.Done():
+            return
+        case <-g.ticker.C:
+            g.generateTasks(ctx)
+        }
+    }
+}
+```
+
+#### Что было сделано
+
+- Миграции up и down БД (`migrations/0002_add_recurrence_fields.up.sql`)
+- Domain слой с типами `RecurrenceType` и полями в `Task`
+- DTO с новыми полями для API
+- Repository с поддержкой всех полей
+- Валидация в UseCase
+- Swagger/OpenAPI документация обновлена
+- Unit-тесты валидации (22 кейса)
+- Интеграционные тесты репозитория (6 кейсов)
+- Генератор задач: фоновый сервис для автоматического создания задач из шаблонов
+
+#### Конфигурация генератора
+
+Генератор задач настраивается через переменные окружения:
+
+| Переменная | Описание | По умолчанию |
+|------------|----------|---------------|
+| `GENERATOR_INTERVAL` | Интервал запуска (формат: `5m`, `1h`) | `5m` |
+| `GENERATOR_WORKERS` | Количество параллельных воркеров | `1` |
+
+Пример:
+```bash
+GENERATOR_INTERVAL=10m GENERATOR_WORKERS=4 go run cmd/api/main.go
+```
+
+#### Запуск тестов
+
+Для локального запуска тестов нужно запустить контейнер с postgresql с помощью команды:
+```bash
+docker compose up postgres -d
+```
+
+В проде / тестовой среде перед запуском приложения нужно установить переменную окружения `TEST_DB_URL` для подключения к тестовой БД.
+
+#### Примеры запросов
+
+##### Создание задачи без периодичности
+
+```bash
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Обычная задача", "description": "Описание", "status": "new"}'
+```
+
+##### Создание ежедневной задачи (каждый 1 день)
+
+```bash
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Ежедневный обзвон",
+    "description": "Обзвон пациентов",
+    "status": "new",
+    "recurrence_type": "daily",
+    "recurrence_interval": 1
+  }'
+```
+
+##### Создание задачи каждые 3 дня
+
+```bash
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Проверка оборудования",
+    "description": "Раз в 3 дня",
+    "status": "new",
+    "recurrence_type": "daily",
+    "recurrence_interval": 3
+  }'
+```
+
+##### Создание ежемесячной задаки (15 числа)
+
+```bash
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Отчет за месяц",
+    "description": "Формирование отчета",
+    "status": "new",
+    "recurrence_type": "monthly",
+    "recurrence_day": 15
+  }'
+```
+
+##### Создание задачи на конкретные даты
+
+```bash
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Встреча с клиентом",
+    "description": "Конкретные даты",
+    "status": "new",
+    "recurrence_type": "specific_dates",
+    "recurrence_dates": ["2026-04-15", "2026-05-01", "2026-06-01"]
+  }'
+```
+
+##### Создание задачи на чётные дни
+
+```bash
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Инвентаризация",
+    "description": "Только чётные дни",
+    "status": "new",
+    "recurrence_type": "even_odd",
+    "recurrence_even_odd": true
+  }'
+```
+
+##### Создание задачи на нечётные дни
+
+```bash
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Планерка",
+    "description": "Только нечётные дни",
+    "status": "new",
+    "recurrence_type": "even_odd",
+    "recurrence_even_odd": false
+  }'
+```
+
+##### Получение списка задач
+
+```bash
+curl http://localhost:8080/api/v1/tasks
+```
+
+##### Получение конкретной задачи
+
+```bash
+curl http://localhost:8080/api/v1/tasks/1
+```
+
+##### Обновление задачи (добавление периодичности)
+
+```bash
+curl -X PUT http://localhost:8080/api/v1/tasks/1 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Обновленная задача",
+    "description": "Добавлена периодичность",
+    "status": "in_progress",
+    "recurrence_type": "daily",
+    "recurrence_interval": 2
+  }'
+```
+
+##### Удаление задачи
+
+```bash
+curl -X DELETE http://localhost:8080/api/v1/tasks/1
+```
+---
+
+## Требования
+
+- Go `1.23+`
+- Docker и Docker Compose
+
+## Переменные окружения
+
+| Переменная | Описание | По умолчанию |
+|------------|----------|---------------|
+| `HTTP_ADDR` | Адрес HTTP сервера | `:8080` |
+| `DATABASE_DSN` | Строка подключения к PostgreSQL | `postgres://postgres:postgres@localhost:5432/taskservice?sslmode=disable` |
+| `GENERATOR_INTERVAL` | Интервал запуска генератора задач | `30s` |
+| `GENERATOR_WORKERS` | Количество воркеров генератора | `1` |
+
+## Тестирование
+
+Для тестирования API можно использовать скрипт:
+
+```bash
+./scripts/test_api.sh
+```
+
+Скрипт выполняет основные операции:
+- Создание задач с разными типами периодичности
+- Проверка валидации
+- Получение и обновление задач
+
+### Как работает генератор
+
+Генератор запускается первый раз через 30 секунд после старта приложения (по умолчанию).
+
+**Пример:**
+1. Создаём задачу-шаблон: `recurrence_type: daily, recurrence_interval: 1`
+2. Через 30 секунд генератор проверяет все шаблоны
+3. Если шаблон создан сегодня (или ранее) и interval подходит — создаётся новая задача
+
+**Типы задач, которые создаст генератор сегодня (например, 13 апреля 2026 г., чётный день):**
+
+| Шаблон | Создаст задачу? | Почему |
+|--------|-----------------|--------|
+| `daily, interval=1` | Да | 13 % 1 = 0 (подходит) |
+| `daily, interval=2` | Нет | 13 % 2 = 1 |
+| `monthly, day=13` | Да | сегодня 13-е число |
+| `monthly, day=15` | Нет | сегодня 13-е |
+| `even_odd=true` | Да | 13 — чётное число |
+| `even_odd=false` | Нет | 13 — не нечётное |
+| `specific_dates=["2026-04-13"]` | Да | дата совпадает |
+| `specific_dates=["2026-04-15"]` | Нет | дата в будущем |
+
+Просмотреть логи генератора:
+```bash
+docker compose logs app | grep -i "generator\|created task"
+```
+
+## Быстрый запуск через Docker Compose
+
+```bash
+docker compose up --build
+```
+
+После запуска сервис будет доступен по адресу `http://localhost:8080`.
+
+Если `postgres` уже запускался ранее со старой схемой, пересоздай volume:
+
+```bash
+docker compose down -v
+docker compose up --build
+```
+
+Причина в том, что SQL-файл из `migrations/0001_create_tasks.up.sql` монтируется в `docker-entrypoint-initdb.d` и применяется только при инициализации пустого data volume.
+
+## Swagger
+
+Swagger UI:
+
+```text
+http://localhost:8080/swagger/
+```
+
+OpenAPI JSON:
+
+```text
+http://localhost:8080/swagger/openapi.json
+```
+
+## API
+
+Базовый префикс API:
+
+```text
+/api/v1
+```
+
+Основные маршруты:
+
+- `POST /api/v1/tasks`
+- `GET /api/v1/tasks`
+- `GET /api/v1/tasks/{id}`
+- `PUT /api/v1/tasks/{id}`
+- `DELETE /api/v1/tasks/{id}`
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: docker-compose.yml
+Размер: 1,015 байт
+────────────────────────────────────────────────────────────────────────────────
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: taskservice
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d taskservice"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations/0001_create_tasks.up.sql:/docker-entrypoint-initdb.d/001_create_tasks.sql:ro
+      - ./migrations/0002_add_recurrence_fields.up.sql:/docker-entrypoint-initdb.d/002_add_recurrence.sql:ro
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      HTTP_ADDR: :8080
+      DATABASE_DSN: postgres://postgres:postgres@postgres:5432/taskservice?sslmode=disable
+      GENERATOR_INTERVAL: 30s
+      GENERATOR_WORKERS: 1
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: go.mod
+Размер: 709 байт
+────────────────────────────────────────────────────────────────────────────────
+module example.com/taskservice
+
+go 1.23.0
+
+require (
+	github.com/gorilla/mux v1.8.1
+	github.com/jackc/pgx/v5 v5.7.6
+	github.com/stretchr/testify v1.9.0
+)
+
+require (
+	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
+	github.com/kr/text v0.2.0 // indirect
+	github.com/pmezard/go-difflib v1.0.0 // indirect
+	github.com/rogpeppe/go-internal v1.14.1 // indirect
+	golang.org/x/crypto v0.37.0 // indirect
+	golang.org/x/sync v0.13.0 // indirect
+	golang.org/x/text v0.24.0 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
+)
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: go.sum
+Размер: 3,448 байт
+────────────────────────────────────────────────────────────────────────────────
+github.com/creack/pty v1.1.9/go.mod h1:oKZEueFk5CKHvIhNR5MUki03XCEU+Q6VDXinZuGJ33E=
+github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
+github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/gorilla/mux v1.8.1 h1:TuBL49tXwgrFYWhqrNgrUNEY92u81SPhu7sTdzQEiWY=
+github.com/gorilla/mux v1.8.1/go.mod h1:AKf9I4AEqPTmMytcMc0KkNouC66V3BtZ4qD5fmWSiMQ=
+github.com/jackc/pgpassfile v1.0.0 h1:/6Hmqy13Ss2zCq62VdNG8tM1wchn8zjSGOBJ6icpsIM=
+github.com/jackc/pgpassfile v1.0.0/go.mod h1:CEx0iS5ambNFdcRtxPj5JhEz+xB6uRky5eyVu/W2HEg=
+github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 h1:iCEnooe7UlwOQYpKFhBabPMi4aNAfoODPEFNiAnClxo=
+github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761/go.mod h1:5TJZWKEWniPve33vlWYSoGYefn3gLQRzjfDlhSJ9ZKM=
+github.com/jackc/pgx/v5 v5.7.6 h1:rWQc5FwZSPX58r1OQmkuaNicxdmExaEz5A2DO2hUuTk=
+github.com/jackc/pgx/v5 v5.7.6/go.mod h1:aruU7o91Tc2q2cFp5h4uP3f6ztExVpyVv88Xl/8Vl8M=
+github.com/jackc/puddle/v2 v2.2.2 h1:PR8nw+E/1w0GLuRFSmiioY6UooMp6KJv0/61nB7icHo=
+github.com/jackc/puddle/v2 v2.2.2/go.mod h1:vriiEXHvEE654aYKXXjOvZM39qJ0q+azkZFrfEOc3H4=
+github.com/kr/pretty v0.3.0 h1:WgNl7dwNpEZ6jJ9k1snq4pZsg7DOEN8hP9Xw0Tsjwk0=
+github.com/kr/pretty v0.3.0/go.mod h1:640gp4NfQd8pI5XOwp5fnNeVWj67G7CFk/SaSQn7NBk=
+github.com/kr/text v0.2.0 h1:5Nx0Ya0ZqY2ygV366QzturHI13Jq95ApcVaJBhpS+AY=
+github.com/kr/text v0.2.0/go.mod h1:eLer722TekiGuMkidMxC/pM04lWEeraHUUmBw8l2grE=
+github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
+github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
+github.com/rogpeppe/go-internal v1.14.1 h1:UQB4HGPB6osV0SQTLymcB4TgvyWu6ZyliaW0tI/otEQ=
+github.com/rogpeppe/go-internal v1.14.1/go.mod h1:MaRKkUm5W0goXpeCfT7UZI6fk/L7L7so1lCWt35ZSgc=
+github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
+github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UVUgZn+9EI=
+github.com/stretchr/testify v1.7.0/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
+github.com/stretchr/testify v1.9.0 h1:HtqpIVDClZ4nwg75+f6Lvsy/wHu+3BoSGCbBAcpTsTg=
+github.com/stretchr/testify v1.9.0/go.mod h1:r2ic/lqez/lEtzL7wO/rwa5dbSLXVDPFyf8C91i36aY=
+golang.org/x/crypto v0.37.0 h1:kJNSjF/Xp7kU0iB2Z+9viTPMW4EqqsrywMXLJOOsXSE=
+golang.org/x/crypto v0.37.0/go.mod h1:vg+k43peMZ0pUMhYmVAWysMK35e6ioLh3wB8ZCAfbVc=
+golang.org/x/sync v0.13.0 h1:AauUjRAJ9OSnvULf/ARrrVywoJDy0YS2AwQ98I37610=
+golang.org/x/sync v0.13.0/go.mod h1:1dzgHSNfp02xaA81J2MS99Qcpr2w7fw1gpm99rleRqA=
+golang.org/x/text v0.24.0 h1:dd5Bzh4yt5KYA8f9CJHCP4FB4D51c2c6JvN37xJJkJ0=
+golang.org/x/text v0.24.0/go.mod h1:L8rBsPeo2pSS+xqN0d5u2ikmjtmoJbDBT1b7nHvFCdU=
+gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
+gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c h1:Hei/4ADfdWqJk1ZMxUNpqntNwaWcugrBjAiHlqqRiVk=
+gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c/go.mod h1:JHkPIbrfpd72SG/EVd6muEfDQjcINNoR0C8j2r3qZ4Q=
+gopkg.in/yaml.v3 v3.0.0-20200313102051-9f266ea9e77c/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
+gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+
+
+================================================================================
+📁 ПАПКА: dreadew/cmd/
+================================================================================
+
+================================================================================
+📁 ПАПКА: dreadew/cmd\api/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: cmd\api\main.go
+Размер: 3,233 байт
+────────────────────────────────────────────────────────────────────────────────
+package main
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"example.com/taskservice/internal/generator"
+	infrastructurepostgres "example.com/taskservice/internal/infrastructure/postgres"
+	postgresrepo "example.com/taskservice/internal/repository/postgres"
+	transporthttp "example.com/taskservice/internal/transport/http"
+	swaggerdocs "example.com/taskservice/internal/transport/http/docs"
+	httphandlers "example.com/taskservice/internal/transport/http/handlers"
+	"example.com/taskservice/internal/usecase/task"
+)
+
+func main() {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
+
+	cfg := loadConfig()
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	pool, err := infrastructurepostgres.Open(ctx, cfg.DatabaseDSN)
+	if err != nil {
+		logger.Error("open postgres", "error", err)
+		os.Exit(1)
+	}
+	defer pool.Close()
+
+	taskRepo := postgresrepo.New(pool)
+	taskUsecase := task.NewService(taskRepo)
+	taskHandler := httphandlers.NewTaskHandler(taskUsecase)
+	docsHandler := swaggerdocs.NewHandler()
+	router := transporthttp.NewRouter(taskHandler, docsHandler)
+
+	taskGenerator := generator.New(taskRepo, cfg.GeneratorInterval, cfg.GeneratorWorkers)
+	go taskGenerator.Start(ctx)
+
+	server := &http.Server{
+		Addr:              cfg.HTTPAddr,
+		Handler:           router,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	go func() {
+		<-ctx.Done()
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			logger.Error("shutdown http server", "error", err)
+		}
+	}()
+
+	logger.Info("http server started", "addr", cfg.HTTPAddr)
+
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		logger.Error("listen and serve", "error", err)
+		os.Exit(1)
+	}
+}
+
+type config struct {
+	HTTPAddr    string
+	DatabaseDSN string
+
+	GeneratorInterval time.Duration
+	GeneratorWorkers  int
+}
+
+func loadConfig() config {
+	genInterval := envDurationOrDefault("GENERATOR_INTERVAL", 5*time.Minute)
+	genWorkers := envIntOrDefault("GENERATOR_WORKERS", 1)
+
+	cfg := config{
+		HTTPAddr:          envOrDefault("HTTP_ADDR", ":8080"),
+		DatabaseDSN:       envOrDefault("DATABASE_DSN", "postgres://postgres:postgres@localhost:5432/taskservice?sslmode=disable"),
+		GeneratorInterval: genInterval,
+		GeneratorWorkers:  genWorkers,
+	}
+
+	if cfg.DatabaseDSN == "" {
+		panic(fmt.Errorf("DATABASE_DSN is required"))
+	}
+
+	return cfg
+}
+
+func envOrDefault(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+
+	return fallback
+}
+
+func envDurationOrDefault(key string, fallback time.Duration) time.Duration {
+	if value := os.Getenv(key); value != "" {
+		d, err := time.ParseDuration(value)
+		if err == nil {
+			return d
+		}
+	}
+
+	return fallback
+}
+
+func envIntOrDefault(key string, fallback int) int {
+	if value := os.Getenv(key); value != "" {
+		var v int
+		if _, err := fmt.Sscanf(value, "%d", &v); err == nil {
+			return v
+		}
+	}
+
+	return fallback
+}
+
+
+================================================================================
+📁 ПАПКА: dreadew/internal/
+================================================================================
+
+================================================================================
+📁 ПАПКА: dreadew/internal\domain/
+================================================================================
+
+================================================================================
+📁 ПАПКА: dreadew/internal\domain\task/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\domain\task\errors.go
+Размер: 83 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import "errors"
+
+var ErrNotFound = errors.New("task not found")
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\domain\task\task.go
+Размер: 1,546 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import "time"
+
+const DateFormat = "2006-01-02"
+
+type Status string
+
+const (
+	StatusNew        Status = "new"
+	StatusInProgress Status = "in_progress"
+	StatusDone       Status = "done"
+)
+
+type RecurrenceType string
+
+const (
+	RecurrenceNone     RecurrenceType = "none"
+	RecurrenceDaily    RecurrenceType = "daily"
+	RecurrenceMonthly  RecurrenceType = "monthly"
+	RecurrenceSpecific RecurrenceType = "specific_dates"
+	RecurrenceEvenOdd  RecurrenceType = "even_odd"
+)
+
+type Task struct {
+	ID                 int64          `json:"id"`
+	Title              string         `json:"title"`
+	Description        string         `json:"description"`
+	Status             Status         `json:"status"`
+	RecurrenceType     RecurrenceType `json:"recurrence_type"`
+	RecurrenceInterval *int           `json:"recurrence_interval,omitempty"`
+	RecurrenceDay      *int           `json:"recurrence_day,omitempty"`
+	RecurrenceEvenOdd  *bool          `json:"recurrence_even_odd,omitempty"`
+	RecurrenceDates    []string       `json:"recurrence_dates,omitempty"`
+	CreatedAt          time.Time      `json:"created_at"`
+	UpdatedAt          time.Time      `json:"updated_at"`
+}
+
+func (s Status) Valid() bool {
+	switch s {
+	case StatusNew, StatusInProgress, StatusDone:
+		return true
+	default:
+		return false
+	}
+}
+
+func (rt RecurrenceType) Valid() bool {
+	switch rt {
+	case RecurrenceNone, RecurrenceDaily, RecurrenceMonthly, RecurrenceSpecific, RecurrenceEvenOdd:
+		return true
+	default:
+		return false
+	}
+}
+
+
+================================================================================
+📁 ПАПКА: dreadew/internal\generator/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\generator\task_generator.go
+Размер: 5,594 байт
+────────────────────────────────────────────────────────────────────────────────
+package generator
+
+import (
+	"context"
+	"log"
+	"sync"
+	"time"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+	taskrepo "example.com/taskservice/internal/repository/postgres"
+)
+
+type genResult struct {
+	templateID int64
+	err        error
+	date       string
+}
+
+type Generator struct {
+	repo     *taskrepo.Repository
+	interval time.Duration
+	workers  int
+	logger   *log.Logger
+	nowFunc  func() time.Time
+}
+
+func New(repo *taskrepo.Repository, interval time.Duration, workers int) *Generator {
+	if workers <= 0 {
+		workers = 1
+	}
+
+	return &Generator{
+		repo:     repo,
+		interval: interval,
+		workers:  workers,
+		logger:   log.Default(),
+		nowFunc:  time.Now,
+	}
+}
+
+func (g *Generator) Start(ctx context.Context) {
+	g.logger.Println("Task generator started")
+
+	ticker := time.NewTicker(g.interval)
+	defer ticker.Stop()
+
+	g.generate(ctx)
+
+	for {
+		select {
+		case <-ctx.Done():
+			g.logger.Println("Task generator stopped")
+			return
+		case <-ticker.C:
+			g.generate(ctx)
+		}
+	}
+}
+
+func (g *Generator) generate(ctx context.Context) {
+	templates, err := g.fetchTemplates(ctx)
+	if err != nil {
+		return
+	}
+
+	if len(templates) == 0 {
+		return
+	}
+
+	g.processTemplates(ctx, templates)
+}
+
+func (g *Generator) fetchTemplates(ctx context.Context) ([]taskdomain.Task, error) {
+	templates, err := g.repo.GetTemplatesWithRecurrence(ctx)
+	if err != nil {
+		g.logger.Printf("Error fetching templates: %v", err)
+		return nil, err
+	}
+	return templates, nil
+}
+
+func (g *Generator) processTemplates(ctx context.Context, templates []taskdomain.Task) {
+	workChan := make(chan taskdomain.Task, len(templates))
+	results := make(chan genResult, len(templates)*10)
+
+	var wg sync.WaitGroup
+	for i := 0; i < g.workers; i++ {
+		wg.Add(1)
+		go g.worker(ctx, workChan, results, &wg)
+	}
+
+	for _, tmpl := range templates {
+		workChan <- tmpl
+	}
+	close(workChan)
+
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	for r := range results {
+		if r.err != nil {
+			g.logger.Printf("Error creating task from template %d: %v", r.templateID, r.err)
+		} else {
+			g.logger.Printf("Created task from template %d for date %s", r.templateID, r.date)
+		}
+	}
+}
+
+func (g *Generator) worker(ctx context.Context, workChan <-chan taskdomain.Task, results chan<- genResult, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	for tmpl := range workChan {
+		tasks := g.generateFromTemplate(tmpl)
+		for _, task := range tasks {
+			_, err := g.repo.Create(ctx, &task)
+			results <- genResult{
+				templateID: tmpl.ID,
+				err:        err,
+				date:       task.CreatedAt.Format(taskdomain.DateFormat),
+			}
+		}
+	}
+}
+
+func (g *Generator) generateFromTemplate(tmpl taskdomain.Task) []taskdomain.Task {
+	now := g.nowFunc()
+	today := now.Truncate(24 * time.Hour)
+
+	switch tmpl.RecurrenceType {
+	case taskdomain.RecurrenceDaily:
+		return g.generateDaily(tmpl, today, now)
+	case taskdomain.RecurrenceMonthly:
+		return g.generateMonthly(tmpl, today, now)
+	case taskdomain.RecurrenceSpecific:
+		return g.generateSpecific(tmpl, today, now)
+	case taskdomain.RecurrenceEvenOdd:
+		return g.generateEvenOdd(tmpl, today, now)
+	default:
+		return nil
+	}
+}
+
+func (g *Generator) generateDaily(tmpl taskdomain.Task, today, now time.Time) []taskdomain.Task {
+	if tmpl.RecurrenceInterval == nil || *tmpl.RecurrenceInterval <= 0 {
+		return nil
+	}
+
+	interval := *tmpl.RecurrenceInterval
+	createdAt := tmpl.CreatedAt.Truncate(24 * time.Hour)
+
+	if createdAt.After(today) {
+		return nil
+	}
+
+	daysSinceCreation := int(today.Sub(createdAt).Hours() / 24)
+	if daysSinceCreation < 0 {
+		return nil
+	}
+
+	if daysSinceCreation%interval == 0 {
+		return []taskdomain.Task{{
+			Title:       tmpl.Title,
+			Description: tmpl.Description,
+			Status:      taskdomain.StatusNew,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		}}
+	}
+
+	return nil
+}
+
+func (g *Generator) generateMonthly(tmpl taskdomain.Task, today, now time.Time) []taskdomain.Task {
+	if tmpl.RecurrenceDay == nil || *tmpl.RecurrenceDay < 1 || *tmpl.RecurrenceDay > 30 {
+		return nil
+	}
+
+	day := *tmpl.RecurrenceDay
+	currentDay := today.Day()
+
+	if currentDay == day {
+		return []taskdomain.Task{{
+			Title:       tmpl.Title,
+			Description: tmpl.Description,
+			Status:      taskdomain.StatusNew,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		}}
+	}
+
+	return nil
+}
+
+func (g *Generator) generateSpecific(tmpl taskdomain.Task, today, now time.Time) []taskdomain.Task {
+	if len(tmpl.RecurrenceDates) == 0 {
+		return nil
+	}
+
+	var tasks []taskdomain.Task
+	for _, dateStr := range tmpl.RecurrenceDates {
+		date, err := time.Parse(taskdomain.DateFormat, dateStr)
+		if err != nil {
+			continue
+		}
+		date = date.Truncate(24 * time.Hour)
+
+		if date.Equal(today) {
+			tasks = append(tasks, taskdomain.Task{
+				Title:       tmpl.Title,
+				Description: tmpl.Description,
+				Status:      taskdomain.StatusNew,
+				CreatedAt:   now,
+				UpdatedAt:   now,
+			})
+		}
+	}
+
+	return tasks
+}
+
+func (g *Generator) generateEvenOdd(tmpl taskdomain.Task, today, now time.Time) []taskdomain.Task {
+	if tmpl.RecurrenceEvenOdd == nil {
+		return nil
+	}
+
+	isEven := *tmpl.RecurrenceEvenOdd
+	currentDay := today.Day()
+	isCurrentDayEven := currentDay%2 == 0
+
+	if isEven && isCurrentDayEven || !isEven && !isCurrentDayEven {
+		return []taskdomain.Task{{
+			Title:       tmpl.Title,
+			Description: tmpl.Description,
+			Status:      taskdomain.StatusNew,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		}}
+	}
+
+	return nil
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\generator\task_generator_test.go
+Размер: 5,311 байт
+────────────────────────────────────────────────────────────────────────────────
+package generator
+
+import (
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+func TestGenerateFromTemplate(t *testing.T) {
+	now := time.Now().UTC()
+	today := now.Truncate(24 * time.Hour)
+
+	tests := []struct {
+		name      string
+		tmpl      taskdomain.Task
+		wantCount int
+		wantTitle string
+	}{
+		{
+			name: "daily - interval matches today",
+			tmpl: taskdomain.Task{
+				ID:                 1,
+				Title:              "Daily task",
+				Description:        "Test",
+				Status:             taskdomain.StatusNew,
+				RecurrenceType:     taskdomain.RecurrenceDaily,
+				RecurrenceInterval: intPtr(1),
+				CreatedAt:          today.AddDate(0, 0, -2),
+			},
+			wantCount: 1,
+			wantTitle: "Daily task",
+		},
+		{
+			name: "daily - interval does not match today",
+			tmpl: taskdomain.Task{
+				ID:                 2,
+				Title:              "Daily task 2",
+				Description:        "Test",
+				Status:             taskdomain.StatusNew,
+				RecurrenceType:     taskdomain.RecurrenceDaily,
+				RecurrenceInterval: intPtr(2),
+				CreatedAt:          today.AddDate(0, 0, -1),
+			},
+			wantCount: 0,
+		},
+		{
+			name: "daily - template created in future",
+			tmpl: taskdomain.Task{
+				ID:                 3,
+				Title:              "Future task",
+				Description:        "Test",
+				Status:             taskdomain.StatusNew,
+				RecurrenceType:     taskdomain.RecurrenceDaily,
+				RecurrenceInterval: intPtr(1),
+				CreatedAt:          today.AddDate(0, 0, 1),
+			},
+			wantCount: 0,
+		},
+		{
+			name: "daily - zero interval",
+			tmpl: taskdomain.Task{
+				ID:                 4,
+				Title:              "Zero interval",
+				Description:        "Test",
+				Status:             taskdomain.StatusNew,
+				RecurrenceType:     taskdomain.RecurrenceDaily,
+				RecurrenceInterval: intPtr(0),
+				CreatedAt:          today.AddDate(0, 0, -1),
+			},
+			wantCount: 0,
+		},
+		{
+			name: "monthly - day matches today",
+			tmpl: taskdomain.Task{
+				ID:             5,
+				Title:          "Monthly task",
+				Description:    "Test",
+				Status:         taskdomain.StatusNew,
+				RecurrenceType: taskdomain.RecurrenceMonthly,
+				RecurrenceDay:  intPtr(today.Day()),
+				CreatedAt:      today.AddDate(0, 0, -30),
+			},
+			wantCount: 1,
+			wantTitle: "Monthly task",
+		},
+		{
+			name: "monthly - day does not match today",
+			tmpl: taskdomain.Task{
+				ID:             6,
+				Title:          "Monthly task 2",
+				Description:    "Test",
+				Status:         taskdomain.StatusNew,
+				RecurrenceType: taskdomain.RecurrenceMonthly,
+				RecurrenceDay:  intPtr(today.Day() + 1),
+				CreatedAt:      today.AddDate(0, 0, -30),
+			},
+			wantCount: 0,
+		},
+		{
+			name: "specific - date matches today",
+			tmpl: taskdomain.Task{
+				ID:              7,
+				Title:           "Specific task",
+				Description:     "Test",
+				Status:          taskdomain.StatusNew,
+				RecurrenceType:  taskdomain.RecurrenceSpecific,
+				RecurrenceDates: []string{today.Format(taskdomain.DateFormat)},
+				CreatedAt:       today.AddDate(0, 0, -30),
+			},
+			wantCount: 1,
+			wantTitle: "Specific task",
+		},
+		{
+			name: "specific - date in past",
+			tmpl: taskdomain.Task{
+				ID:              8,
+				Title:           "Specific task past",
+				Description:     "Test",
+				Status:          taskdomain.StatusNew,
+				RecurrenceType:  taskdomain.RecurrenceSpecific,
+				RecurrenceDates: []string{today.AddDate(0, 0, -1).Format(taskdomain.DateFormat)},
+				CreatedAt:       today.AddDate(0, 0, -30),
+			},
+			wantCount: 0,
+		},
+		{
+			name: "specific - date in future",
+			tmpl: taskdomain.Task{
+				ID:              9,
+				Title:           "Specific task future",
+				Description:     "Test",
+				Status:          taskdomain.StatusNew,
+				RecurrenceType:  taskdomain.RecurrenceSpecific,
+				RecurrenceDates: []string{today.AddDate(0, 0, 1).Format(taskdomain.DateFormat)},
+				CreatedAt:       today.AddDate(0, 0, -30),
+			},
+			wantCount: 0,
+		},
+		{
+			name: "even_odd - even day matches",
+			tmpl: taskdomain.Task{
+				ID:                10,
+				Title:             "Even task",
+				Description:       "Test",
+				Status:            taskdomain.StatusNew,
+				RecurrenceType:    taskdomain.RecurrenceEvenOdd,
+				RecurrenceEvenOdd: boolPtr(true),
+				CreatedAt:         today.AddDate(0, 0, -30),
+			},
+			wantCount: 0,
+		},
+		{
+			name: "none type",
+			tmpl: taskdomain.Task{
+				ID:             11,
+				Title:          "None task",
+				Description:    "Test",
+				Status:         taskdomain.StatusNew,
+				RecurrenceType: taskdomain.RecurrenceNone,
+				CreatedAt:      today.AddDate(0, 0, -30),
+			},
+			wantCount: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := &Generator{
+				repo:     nil,
+				interval: 0,
+				logger:   nil,
+				nowFunc:  func() time.Time { return now },
+			}
+
+			result := g.generateFromTemplate(tt.tmpl)
+			assert.Len(t, result, tt.wantCount)
+
+			if tt.wantCount > 0 && len(result) > 0 {
+				assert.Equal(t, tt.wantTitle, result[0].Title)
+			}
+		})
+	}
+}
+
+func intPtr(v int) *int {
+	return &v
+}
+
+func boolPtr(v bool) *bool {
+	return &v
+}
+
+
+================================================================================
+📁 ПАПКА: dreadew/internal\infrastructure/
+================================================================================
+
+================================================================================
+📁 ПАПКА: dreadew/internal\infrastructure\postgres/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\infrastructure\postgres\pool.go
+Размер: 512 байт
+────────────────────────────────────────────────────────────────────────────────
+package postgres
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+func Open(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
+	if dsn == "" {
+		return nil, fmt.Errorf("database dsn is empty")
+	}
+
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, err
+	}
+
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, err
+	}
+
+	return pool, nil
+}
+
+
+================================================================================
+📁 ПАПКА: dreadew/internal\repository/
+================================================================================
+
+================================================================================
+📁 ПАПКА: dreadew/internal\repository\postgres/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\repository\postgres\task_repository.go
+Размер: 5,356 байт
+────────────────────────────────────────────────────────────────────────────────
+package postgres
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type Repository struct {
+	pool *pgxpool.Pool
+}
+
+func New(pool *pgxpool.Pool) *Repository {
+	return &Repository{pool: pool}
+}
+
+func (r *Repository) Create(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error) {
+	const query = `
+		INSERT INTO tasks (title, description, status, recurrence_type, recurrence_interval, 
+			recurrence_day, recurrence_even_odd, recurrence_dates, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		RETURNING id, title, description, status, recurrence_type, recurrence_interval, 
+			recurrence_day, recurrence_even_odd, recurrence_dates, created_at, updated_at
+	`
+
+	row := r.pool.QueryRow(ctx, query,
+		task.Title, task.Description, task.Status,
+		task.RecurrenceType, task.RecurrenceInterval, task.RecurrenceDay,
+		task.RecurrenceEvenOdd, task.RecurrenceDates,
+		task.CreatedAt, task.UpdatedAt)
+	created, err := scanTask(row)
+	if err != nil {
+		return nil, err
+	}
+
+	return created, nil
+}
+
+func (r *Repository) GetByID(ctx context.Context, id int64) (*taskdomain.Task, error) {
+	const query = `
+		SELECT id, title, description, status, recurrence_type, recurrence_interval, 
+			recurrence_day, recurrence_even_odd, recurrence_dates, created_at, updated_at
+		FROM tasks
+		WHERE id = $1
+	`
+
+	row := r.pool.QueryRow(ctx, query, id)
+	found, err := scanTask(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, taskdomain.ErrNotFound
+		}
+
+		return nil, err
+	}
+
+	return found, nil
+}
+
+func (r *Repository) Update(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error) {
+	const query = `
+		UPDATE tasks
+		SET title = $1,
+			description = $2,
+			status = $3,
+			recurrence_type = $4,
+			recurrence_interval = $5,
+			recurrence_day = $6,
+			recurrence_even_odd = $7,
+			recurrence_dates = $8,
+			updated_at = $9
+		WHERE id = $10
+		RETURNING id, title, description, status, recurrence_type, recurrence_interval, 
+			recurrence_day, recurrence_even_odd, recurrence_dates, created_at, updated_at
+	`
+
+	row := r.pool.QueryRow(ctx, query,
+		task.Title, task.Description, task.Status,
+		task.RecurrenceType, task.RecurrenceInterval, task.RecurrenceDay,
+		task.RecurrenceEvenOdd, task.RecurrenceDates,
+		task.UpdatedAt, task.ID)
+	updated, err := scanTask(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, taskdomain.ErrNotFound
+		}
+
+		return nil, err
+	}
+
+	return updated, nil
+}
+
+func (r *Repository) Delete(ctx context.Context, id int64) error {
+	const query = `DELETE FROM tasks WHERE id = $1`
+
+	result, err := r.pool.Exec(ctx, query, id)
+	if err != nil {
+		return err
+	}
+
+	if result.RowsAffected() == 0 {
+		return taskdomain.ErrNotFound
+	}
+
+	return nil
+}
+
+func (r *Repository) List(ctx context.Context) ([]taskdomain.Task, error) {
+	const query = `
+		SELECT id, title, description, status, recurrence_type, recurrence_interval, 
+			recurrence_day, recurrence_even_odd, recurrence_dates, created_at, updated_at
+		FROM tasks
+		ORDER BY id DESC
+	`
+
+	rows, err := r.pool.Query(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	tasks := make([]taskdomain.Task, 0)
+	for rows.Next() {
+		task, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+
+		tasks = append(tasks, *task)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return tasks, nil
+}
+
+func (r *Repository) GetTemplatesWithRecurrence(ctx context.Context) ([]taskdomain.Task, error) {
+	const query = `
+		SELECT id, title, description, status, recurrence_type, recurrence_interval, 
+			recurrence_day, recurrence_even_odd, recurrence_dates, created_at, updated_at
+		FROM tasks
+		WHERE recurrence_type != 'none'
+		ORDER BY id DESC
+	`
+
+	rows, err := r.pool.Query(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	tasks := make([]taskdomain.Task, 0)
+	for rows.Next() {
+		task, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+
+		tasks = append(tasks, *task)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return tasks, nil
+}
+
+type taskScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanTask(scanner taskScanner) (*taskdomain.Task, error) {
+	var (
+		task            taskdomain.Task
+		status          string
+		recurrenceType  string
+		recurrenceDates []byte
+	)
+
+	if err := scanner.Scan(
+		&task.ID,
+		&task.Title,
+		&task.Description,
+		&status,
+		&recurrenceType,
+		&task.RecurrenceInterval,
+		&task.RecurrenceDay,
+		&task.RecurrenceEvenOdd,
+		&recurrenceDates,
+		&task.CreatedAt,
+		&task.UpdatedAt,
+	); err != nil {
+		return nil, err
+	}
+
+	task.Status = taskdomain.Status(status)
+	task.RecurrenceType = taskdomain.RecurrenceType(recurrenceType)
+
+	if recurrenceDates != nil {
+		task.RecurrenceDates = parseJSONDates(string(recurrenceDates))
+	}
+
+	return &task, nil
+}
+
+func parseJSONDates(data string) []string {
+	if data == "" || data == "null" {
+		return nil
+	}
+
+	var dates []string
+	if err := json.Unmarshal([]byte(data), &dates); err != nil {
+		return nil
+	}
+	return dates
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\repository\postgres\task_repository_integration_test.go
+Размер: 6,702 байт
+────────────────────────────────────────────────────────────────────────────────
+package postgres
+
+import (
+	"context"
+	"os"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+var testTime = time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+
+func createTestPool(ctx context.Context) (*pgxpool.Pool, error) {
+	connStr := os.Getenv("TEST_DB_URL")
+	if connStr == "" {
+		connStr = "postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"
+	}
+	return pgxpool.New(ctx, connStr)
+}
+
+func setupTestDB(ctx context.Context, pool *pgxpool.Pool) error {
+	schema := `
+	CREATE TABLE IF NOT EXISTS tasks (
+		id BIGSERIAL PRIMARY KEY,
+		title TEXT NOT NULL,
+		description TEXT NOT NULL DEFAULT '',
+		status TEXT NOT NULL,
+		recurrence_type TEXT NOT NULL DEFAULT 'none',
+		recurrence_interval INTEGER,
+		recurrence_day INTEGER,
+		recurrence_even_odd BOOLEAN,
+		recurrence_dates JSONB,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+	);
+	CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks (status);
+	CREATE INDEX IF NOT EXISTS idx_tasks_recurrence_type ON tasks (recurrence_type);
+	`
+	_, err := pool.Exec(ctx, schema)
+	return err
+}
+
+func TestRepositoryRecurrenceFields(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	ctx := context.Background()
+
+	pool, err := createTestPool(ctx)
+	require.NoError(t, err)
+	defer pool.Close()
+
+	err = setupTestDB(ctx, pool)
+	require.NoError(t, err, "failed to setup test database")
+
+	repo := New(pool)
+
+	t.Run("create and get task with daily recurrence", func(t *testing.T) {
+		interval := 2
+		task := &taskdomain.Task{
+			Title:              "Daily task",
+			Description:        "Test daily recurrence",
+			Status:             taskdomain.StatusNew,
+			RecurrenceType:     taskdomain.RecurrenceDaily,
+			RecurrenceInterval: &interval,
+		}
+		task.CreatedAt = testTime
+		task.UpdatedAt = testTime
+
+		created, err := repo.Create(ctx, task)
+		require.NoError(t, err)
+		assert.NotZero(t, created.ID)
+		assert.Equal(t, taskdomain.RecurrenceDaily, created.RecurrenceType)
+		assert.Equal(t, 2, *created.RecurrenceInterval)
+
+		got, err := repo.GetByID(ctx, created.ID)
+		require.NoError(t, err)
+		assert.Equal(t, taskdomain.RecurrenceDaily, got.RecurrenceType)
+		assert.Equal(t, 2, *got.RecurrenceInterval)
+	})
+
+	t.Run("create and get task with monthly recurrence", func(t *testing.T) {
+		day := 15
+		task := &taskdomain.Task{
+			Title:          "Monthly task",
+			Description:    "Test monthly recurrence",
+			Status:         taskdomain.StatusNew,
+			RecurrenceType: taskdomain.RecurrenceMonthly,
+			RecurrenceDay:  &day,
+		}
+		task.CreatedAt = testTime
+		task.UpdatedAt = testTime
+
+		created, err := repo.Create(ctx, task)
+		require.NoError(t, err)
+		assert.NotZero(t, created.ID)
+		assert.Equal(t, taskdomain.RecurrenceMonthly, created.RecurrenceType)
+		assert.Equal(t, 15, *created.RecurrenceDay)
+
+		got, err := repo.GetByID(ctx, created.ID)
+		require.NoError(t, err)
+		assert.Equal(t, taskdomain.RecurrenceMonthly, got.RecurrenceType)
+		assert.Equal(t, 15, *got.RecurrenceDay)
+	})
+
+	t.Run("create and get task with even_odd recurrence", func(t *testing.T) {
+		isEven := true
+		task := &taskdomain.Task{
+			Title:             "Even days task",
+			Description:       "Test even_odd recurrence",
+			Status:            taskdomain.StatusNew,
+			RecurrenceType:    taskdomain.RecurrenceEvenOdd,
+			RecurrenceEvenOdd: &isEven,
+		}
+		task.CreatedAt = testTime
+		task.UpdatedAt = testTime
+
+		created, err := repo.Create(ctx, task)
+		require.NoError(t, err)
+		assert.NotZero(t, created.ID)
+		assert.Equal(t, taskdomain.RecurrenceEvenOdd, created.RecurrenceType)
+		assert.True(t, *created.RecurrenceEvenOdd)
+
+		got, err := repo.GetByID(ctx, created.ID)
+		require.NoError(t, err)
+		assert.Equal(t, taskdomain.RecurrenceEvenOdd, got.RecurrenceType)
+		assert.True(t, *got.RecurrenceEvenOdd)
+	})
+
+	t.Run("create and get task with specific_dates recurrence", func(t *testing.T) {
+		dates := []string{"2026-04-01", "2026-04-15", "2026-05-01"}
+		task := &taskdomain.Task{
+			Title:           "Specific dates task",
+			Description:     "Test specific_dates recurrence",
+			Status:          taskdomain.StatusNew,
+			RecurrenceType:  taskdomain.RecurrenceSpecific,
+			RecurrenceDates: dates,
+		}
+		task.CreatedAt = testTime
+		task.UpdatedAt = testTime
+
+		created, err := repo.Create(ctx, task)
+		require.NoError(t, err)
+		assert.NotZero(t, created.ID)
+		assert.Equal(t, taskdomain.RecurrenceSpecific, created.RecurrenceType)
+		assert.Equal(t, dates, created.RecurrenceDates)
+
+		got, err := repo.GetByID(ctx, created.ID)
+		require.NoError(t, err)
+		assert.Equal(t, taskdomain.RecurrenceSpecific, got.RecurrenceType)
+		assert.Equal(t, dates, got.RecurrenceDates)
+	})
+
+	t.Run("update task with recurrence", func(t *testing.T) {
+		task := &taskdomain.Task{
+			Title:          "Original",
+			Description:    "Original desc",
+			Status:         taskdomain.StatusNew,
+			RecurrenceType: taskdomain.RecurrenceNone,
+		}
+		task.CreatedAt = testTime
+		task.UpdatedAt = testTime
+
+		created, err := repo.Create(ctx, task)
+		require.NoError(t, err)
+
+		interval := 3
+		updated, err := repo.Update(ctx, &taskdomain.Task{
+			ID:                 created.ID,
+			Title:              "Updated",
+			Description:        "Updated desc",
+			Status:             taskdomain.StatusInProgress,
+			RecurrenceType:     taskdomain.RecurrenceDaily,
+			RecurrenceInterval: &interval,
+			UpdatedAt:          testTime,
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "Updated", updated.Title)
+		assert.Equal(t, taskdomain.RecurrenceDaily, updated.RecurrenceType)
+		assert.Equal(t, 3, *updated.RecurrenceInterval)
+	})
+
+	t.Run("list tasks with recurrence", func(t *testing.T) {
+		interval := 1
+		task := &taskdomain.Task{
+			Title:              "List test",
+			Description:        "List test desc",
+			Status:             taskdomain.StatusNew,
+			RecurrenceType:     taskdomain.RecurrenceDaily,
+			RecurrenceInterval: &interval,
+		}
+		task.CreatedAt = testTime
+		task.UpdatedAt = testTime
+
+		_, err := repo.Create(ctx, task)
+		require.NoError(t, err)
+
+		tasks, err := repo.List(ctx)
+		require.NoError(t, err)
+		assert.NotEmpty(t, tasks)
+
+		var found bool
+		for _, task := range tasks {
+			if task.Title == "List test" {
+				found = true
+				assert.Equal(t, taskdomain.RecurrenceDaily, task.RecurrenceType)
+			}
+		}
+		assert.True(t, found, "created task should be in list")
+	})
+}
+
+
+================================================================================
+📁 ПАПКА: dreadew/internal\transport/
+================================================================================
+
+================================================================================
+📁 ПАПКА: dreadew/internal\transport\http/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\router.go
+Размер: 1,099 байт
+────────────────────────────────────────────────────────────────────────────────
+package transporthttp
+
+import (
+	"net/http"
+
+	"github.com/gorilla/mux"
+
+	swaggerdocs "example.com/taskservice/internal/transport/http/docs"
+	httphandlers "example.com/taskservice/internal/transport/http/handlers"
+)
+
+func NewRouter(taskHandler *httphandlers.TaskHandler, docsHandler *swaggerdocs.Handler) *mux.Router {
+	router := mux.NewRouter().StrictSlash(true)
+
+	router.HandleFunc("/swagger/openapi.json", docsHandler.ServeSpec).Methods(http.MethodGet)
+	router.HandleFunc("/swagger/", docsHandler.ServeUI).Methods(http.MethodGet)
+	router.HandleFunc("/swagger", docsHandler.RedirectToUI).Methods(http.MethodGet)
+
+	api := router.PathPrefix("/api/v1").Subrouter()
+
+	api.HandleFunc("/tasks", taskHandler.Create).Methods(http.MethodPost)
+	api.HandleFunc("/tasks", taskHandler.List).Methods(http.MethodGet)
+	api.HandleFunc("/tasks/{id:[0-9]+}", taskHandler.GetByID).Methods(http.MethodGet)
+	api.HandleFunc("/tasks/{id:[0-9]+}", taskHandler.Update).Methods(http.MethodPut)
+	api.HandleFunc("/tasks/{id:[0-9]+}", taskHandler.Delete).Methods(http.MethodDelete)
+
+	return router
+}
+
+
+================================================================================
+📁 ПАПКА: dreadew/internal\transport\http\docs/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\docs\handler.go
+Размер: 1,779 байт
+────────────────────────────────────────────────────────────────────────────────
+package docs
+
+import (
+	"embed"
+	"net/http"
+)
+
+//go:embed openapi.json
+var openAPISpec embed.FS
+
+type Handler struct {
+	spec []byte
+}
+
+func NewHandler() *Handler {
+	spec, err := openAPISpec.ReadFile("openapi.json")
+	if err != nil {
+		panic(err)
+	}
+
+	return &Handler{spec: spec}
+}
+
+func (h *Handler) ServeSpec(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+
+	_, _ = w.Write(h.spec)
+}
+
+func (h *Handler) ServeUI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+
+	_, _ = w.Write([]byte(swaggerUIHTML))
+}
+
+func (h *Handler) RedirectToUI(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "/swagger/", http.StatusMovedPermanently)
+}
+
+var swaggerUIHTML = []byte(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Task Service Swagger</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+  <style>
+    body { margin: 0; background: #f6f7fb; }
+    #swagger-ui { max-width: 1440px; margin: 0 auto; }
+  </style>
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js" crossorigin></script>
+  <script>
+    window.onload = function() {
+      window.ui = SwaggerUIBundle({
+        url: '/swagger/openapi.json',
+        dom_id: '#swagger-ui',
+        deepLinking: true,
+        presets: [SwaggerUIBundle.presets.apis],
+        layout: 'BaseLayout'
+      });
+    };
+  </script>
+</body>
+</html>`)
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\docs\openapi.json
+Размер: 8,850 байт
+────────────────────────────────────────────────────────────────────────────────
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Task Service API",
+    "version": "1.0.0",
+    "description": "CRUD API for tasks built with clean architecture."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8080"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Tasks",
+      "description": "Operations with tasks"
+    }
+  ],
+  "paths": {
+    "/api/v1/tasks": {
+      "get": {
+        "tags": ["Tasks"],
+        "summary": "List tasks",
+        "responses": {
+          "200": {
+            "description": "Task list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/Task" }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["Tasks"],
+        "summary": "Create task",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateTaskRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created task",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Task" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/api/v1/tasks/{id}": {
+      "get": {
+        "tags": ["Tasks"],
+        "summary": "Get task by ID",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Task",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Task" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "put": {
+        "tags": ["Tasks"],
+        "summary": "Update task",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/UpdateTaskRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated task",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Task" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["Tasks"],
+        "summary": "Delete task",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "responses": {
+          "204": { "description": "Deleted" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    }
+  },
+  "components": {
+    "responses": {
+      "BadRequest": {
+        "description": "Bad request",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Resource not found",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "CreateTaskRequest": {
+        "type": "object",
+        "required": ["title"],
+        "properties": {
+          "title": {
+            "type": "string",
+            "example": "Prepare release"
+          },
+          "description": {
+            "type": "string",
+            "example": "Collect release notes and check migrations"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["new", "in_progress", "done"],
+            "example": "new"
+          },
+          "recurrence_type": {
+            "type": "string",
+            "enum": ["none", "daily", "monthly", "specific_dates", "even_odd"],
+            "example": "daily",
+            "description": "Type of task recurrence"
+          },
+          "recurrence_interval": {
+            "type": "integer",
+            "example": 1,
+            "description": "Interval in days for daily tasks (required if recurrence_type is daily)"
+          },
+          "recurrence_day": {
+            "type": "integer",
+            "example": 15,
+            "description": "Day of month (1-30) for monthly tasks (required if recurrence_type is monthly)"
+          },
+          "recurrence_even_odd": {
+            "type": "boolean",
+            "example": true,
+            "description": "true=even days, false=odd days (required if recurrence_type is even_odd)"
+          },
+          "recurrence_dates": {
+            "type": "array",
+            "items": { "type": "string" },
+            "example": ["2026-04-01", "2026-04-15", "2026-05-01"],
+            "description": "Specific dates for specific_dates tasks (required if recurrence_type is specific_dates)"
+          }
+        }
+      },
+      "UpdateTaskRequest": {
+        "type": "object",
+        "required": ["title", "status"],
+        "properties": {
+          "title": {
+            "type": "string",
+            "example": "Prepare release"
+          },
+          "description": {
+            "type": "string",
+            "example": "Collect release notes and check migrations"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["new", "in_progress", "done"],
+            "example": "in_progress"
+          },
+          "recurrence_type": {
+            "type": "string",
+            "enum": ["none", "daily", "monthly", "specific_dates", "even_odd"],
+            "example": "daily"
+          },
+          "recurrence_interval": {
+            "type": "integer",
+            "example": 1
+          },
+          "recurrence_day": {
+            "type": "integer",
+            "example": 15
+          },
+          "recurrence_even_odd": {
+            "type": "boolean",
+            "example": true
+          },
+          "recurrence_dates": {
+            "type": "array",
+            "items": { "type": "string" },
+            "example": ["2026-04-01", "2026-04-15"]
+          }
+        }
+      },
+      "Task": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "format": "int64", "example": 1 },
+          "title": { "type": "string", "example": "Prepare release" },
+          "description": {
+            "type": "string",
+            "example": "Collect release notes and check migrations"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["new", "in_progress", "done"],
+            "example": "new"
+          },
+          "recurrence_type": {
+            "type": "string",
+            "enum": ["none", "daily", "monthly", "specific_dates", "even_odd"],
+            "example": "daily"
+          },
+          "recurrence_interval": {
+            "type": "integer",
+            "example": 1,
+            "nullable": true
+          },
+          "recurrence_day": {
+            "type": "integer",
+            "example": 15,
+            "nullable": true
+          },
+          "recurrence_even_odd": {
+            "type": "boolean",
+            "example": true,
+            "nullable": true
+          },
+          "recurrence_dates": {
+            "type": "array",
+            "items": { "type": "string" },
+            "nullable": true
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-03-24T00:00:00Z"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-03-24T00:00:00Z"
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": { "type": "string", "example": "task not found" }
+        }
+      }
+    }
+  }
+}
+
+
+================================================================================
+📁 ПАПКА: dreadew/internal\transport\http\handlers/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\handlers\dto.go
+Размер: 2,089 байт
+────────────────────────────────────────────────────────────────────────────────
+package handlers
+
+import (
+	"time"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type taskMutationDTO struct {
+	Title              string                    `json:"title"`
+	Description        string                    `json:"description"`
+	Status             taskdomain.Status         `json:"status"`
+	RecurrenceType     taskdomain.RecurrenceType `json:"recurrence_type"`
+	RecurrenceInterval *int                      `json:"recurrence_interval,omitempty"`
+	RecurrenceDay      *int                      `json:"recurrence_day,omitempty"`
+	RecurrenceEvenOdd  *bool                     `json:"recurrence_even_odd,omitempty"`
+	RecurrenceDates    []string                  `json:"recurrence_dates,omitempty"`
+}
+
+type taskDTO struct {
+	ID                 int64                     `json:"id"`
+	Title              string                    `json:"title"`
+	Description        string                    `json:"description"`
+	Status             taskdomain.Status         `json:"status"`
+	RecurrenceType     taskdomain.RecurrenceType `json:"recurrence_type"`
+	RecurrenceInterval *int                      `json:"recurrence_interval,omitempty"`
+	RecurrenceDay      *int                      `json:"recurrence_day,omitempty"`
+	RecurrenceEvenOdd  *bool                     `json:"recurrence_even_odd,omitempty"`
+	RecurrenceDates    []string                  `json:"recurrence_dates,omitempty"`
+	CreatedAt          time.Time                 `json:"created_at"`
+	UpdatedAt          time.Time                 `json:"updated_at"`
+}
+
+func newTaskDTO(task *taskdomain.Task) taskDTO {
+	return taskDTO{
+		ID:                 task.ID,
+		Title:              task.Title,
+		Description:        task.Description,
+		Status:             task.Status,
+		RecurrenceType:     task.RecurrenceType,
+		RecurrenceInterval: task.RecurrenceInterval,
+		RecurrenceDay:      task.RecurrenceDay,
+		RecurrenceEvenOdd:  task.RecurrenceEvenOdd,
+		RecurrenceDates:    task.RecurrenceDates,
+		CreatedAt:          task.CreatedAt,
+		UpdatedAt:          task.UpdatedAt,
+	}
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\handlers\task_handler.go
+Размер: 4,259 байт
+────────────────────────────────────────────────────────────────────────────────
+package handlers
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strconv"
+
+	"github.com/gorilla/mux"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+	taskusecase "example.com/taskservice/internal/usecase/task"
+)
+
+type TaskHandler struct {
+	usecase taskusecase.Usecase
+}
+
+func NewTaskHandler(usecase taskusecase.Usecase) *TaskHandler {
+	return &TaskHandler{usecase: usecase}
+}
+
+func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
+	var req taskMutationDTO
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	created, err := h.usecase.Create(r.Context(), taskusecase.CreateInput{
+		Title:              req.Title,
+		Description:        req.Description,
+		Status:             req.Status,
+		RecurrenceType:     req.RecurrenceType,
+		RecurrenceInterval: req.RecurrenceInterval,
+		RecurrenceDay:      req.RecurrenceDay,
+		RecurrenceEvenOdd:  req.RecurrenceEvenOdd,
+		RecurrenceDates:    req.RecurrenceDates,
+	})
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, newTaskDTO(created))
+}
+
+func (h *TaskHandler) GetByID(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	task, err := h.usecase.GetByID(r.Context(), id)
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, newTaskDTO(task))
+}
+
+func (h *TaskHandler) Update(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	var req taskMutationDTO
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	updated, err := h.usecase.Update(r.Context(), id, taskusecase.UpdateInput{
+		Title:              req.Title,
+		Description:        req.Description,
+		Status:             req.Status,
+		RecurrenceType:     req.RecurrenceType,
+		RecurrenceInterval: req.RecurrenceInterval,
+		RecurrenceDay:      req.RecurrenceDay,
+		RecurrenceEvenOdd:  req.RecurrenceEvenOdd,
+		RecurrenceDates:    req.RecurrenceDates,
+	})
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, newTaskDTO(updated))
+}
+
+func (h *TaskHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	if err := h.usecase.Delete(r.Context(), id); err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
+	tasks, err := h.usecase.List(r.Context())
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	response := make([]taskDTO, 0, len(tasks))
+	for i := range tasks {
+		response = append(response, newTaskDTO(&tasks[i]))
+	}
+
+	writeJSON(w, http.StatusOK, response)
+}
+
+func getIDFromRequest(r *http.Request) (int64, error) {
+	rawID := mux.Vars(r)["id"]
+	if rawID == "" {
+		return 0, errors.New("missing task id")
+	}
+
+	id, err := strconv.ParseInt(rawID, 10, 64)
+	if err != nil {
+		return 0, errors.New("invalid task id")
+	}
+
+	if id <= 0 {
+		return 0, errors.New("invalid task id")
+	}
+
+	return id, nil
+}
+
+func decodeJSON(r *http.Request, dst any) error {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+
+	if err := decoder.Decode(dst); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func writeUsecaseError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, taskdomain.ErrNotFound):
+		writeError(w, http.StatusNotFound, err)
+	case errors.Is(err, taskusecase.ErrInvalidInput):
+		writeError(w, http.StatusBadRequest, err)
+	default:
+		writeError(w, http.StatusInternalServerError, err)
+	}
+}
+
+func writeError(w http.ResponseWriter, status int, err error) {
+	writeJSON(w, status, map[string]string{
+		"error": err.Error(),
+	})
+}
+
+func writeJSON(w http.ResponseWriter, status int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+
+================================================================================
+📁 ПАПКА: dreadew/internal\usecase/
+================================================================================
+
+================================================================================
+📁 ПАПКА: dreadew/internal\usecase\task/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\task\errors.go
+Размер: 91 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import "errors"
+
+var ErrInvalidInput = errors.New("invalid task input")
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\task\ports.go
+Размер: 1,465 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import (
+	"context"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type Repository interface {
+	Create(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error)
+	GetByID(ctx context.Context, id int64) (*taskdomain.Task, error)
+	Update(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error)
+	Delete(ctx context.Context, id int64) error
+	List(ctx context.Context) ([]taskdomain.Task, error)
+	GetTemplatesWithRecurrence(ctx context.Context) ([]taskdomain.Task, error)
+}
+
+type Usecase interface {
+	Create(ctx context.Context, input CreateInput) (*taskdomain.Task, error)
+	GetByID(ctx context.Context, id int64) (*taskdomain.Task, error)
+	Update(ctx context.Context, id int64, input UpdateInput) (*taskdomain.Task, error)
+	Delete(ctx context.Context, id int64) error
+	List(ctx context.Context) ([]taskdomain.Task, error)
+}
+
+type CreateInput struct {
+	Title              string
+	Description        string
+	Status             taskdomain.Status
+	RecurrenceType     taskdomain.RecurrenceType
+	RecurrenceInterval *int
+	RecurrenceDay      *int
+	RecurrenceEvenOdd  *bool
+	RecurrenceDates    []string
+}
+
+type UpdateInput struct {
+	Title              string
+	Description        string
+	Status             taskdomain.Status
+	RecurrenceType     taskdomain.RecurrenceType
+	RecurrenceInterval *int
+	RecurrenceDay      *int
+	RecurrenceEvenOdd  *bool
+	RecurrenceDates    []string
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\task\service.go
+Размер: 5,127 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type Service struct {
+	repo Repository
+	now  func() time.Time
+}
+
+func NewService(repo Repository) *Service {
+	return &Service{
+		repo: repo,
+		now:  func() time.Time { return time.Now().UTC() },
+	}
+}
+
+func (s *Service) Create(ctx context.Context, input CreateInput) (*taskdomain.Task, error) {
+	normalized, err := validateCreateInput(input)
+	if err != nil {
+		return nil, err
+	}
+
+	model := &taskdomain.Task{
+		Title:              normalized.Title,
+		Description:        normalized.Description,
+		Status:             normalized.Status,
+		RecurrenceType:     normalized.RecurrenceType,
+		RecurrenceInterval: normalized.RecurrenceInterval,
+		RecurrenceDay:      normalized.RecurrenceDay,
+		RecurrenceEvenOdd:  normalized.RecurrenceEvenOdd,
+		RecurrenceDates:    normalized.RecurrenceDates,
+	}
+	now := s.now()
+	model.CreatedAt = now
+	model.UpdatedAt = now
+
+	created, err := s.repo.Create(ctx, model)
+	if err != nil {
+		return nil, err
+	}
+
+	return created, nil
+}
+
+func (s *Service) GetByID(ctx context.Context, id int64) (*taskdomain.Task, error) {
+	if id <= 0 {
+		return nil, fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+	}
+
+	return s.repo.GetByID(ctx, id)
+}
+
+func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (*taskdomain.Task, error) {
+	if id <= 0 {
+		return nil, fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+	}
+
+	normalized, err := validateUpdateInput(input)
+	if err != nil {
+		return nil, err
+	}
+
+	model := &taskdomain.Task{
+		ID:                 id,
+		Title:              normalized.Title,
+		Description:        normalized.Description,
+		Status:             normalized.Status,
+		RecurrenceType:     normalized.RecurrenceType,
+		RecurrenceInterval: normalized.RecurrenceInterval,
+		RecurrenceDay:      normalized.RecurrenceDay,
+		RecurrenceEvenOdd:  normalized.RecurrenceEvenOdd,
+		RecurrenceDates:    normalized.RecurrenceDates,
+		UpdatedAt:          s.now(),
+	}
+
+	updated, err := s.repo.Update(ctx, model)
+	if err != nil {
+		return nil, err
+	}
+
+	return updated, nil
+}
+
+func (s *Service) Delete(ctx context.Context, id int64) error {
+	if id <= 0 {
+		return fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+	}
+
+	return s.repo.Delete(ctx, id)
+}
+
+func (s *Service) List(ctx context.Context) ([]taskdomain.Task, error) {
+	return s.repo.List(ctx)
+}
+
+func validateCreateInput(input CreateInput) (CreateInput, error) {
+	input.Title = strings.TrimSpace(input.Title)
+	input.Description = strings.TrimSpace(input.Description)
+
+	if input.Title == "" {
+		return CreateInput{}, fmt.Errorf("%w: title is required", ErrInvalidInput)
+	}
+
+	if input.Status == "" {
+		input.Status = taskdomain.StatusNew
+	}
+
+	if !input.Status.Valid() {
+		return CreateInput{}, fmt.Errorf("%w: invalid status", ErrInvalidInput)
+	}
+
+	if err := validateRecurrence(input.RecurrenceType, input.RecurrenceInterval, input.RecurrenceDay, input.RecurrenceEvenOdd, input.RecurrenceDates); err != nil {
+		return CreateInput{}, err
+	}
+
+	if input.RecurrenceType == "" {
+		input.RecurrenceType = taskdomain.RecurrenceNone
+	}
+
+	return input, nil
+}
+
+func validateUpdateInput(input UpdateInput) (UpdateInput, error) {
+	input.Title = strings.TrimSpace(input.Title)
+	input.Description = strings.TrimSpace(input.Description)
+
+	if input.Title == "" {
+		return UpdateInput{}, fmt.Errorf("%w: title is required", ErrInvalidInput)
+	}
+
+	if !input.Status.Valid() {
+		return UpdateInput{}, fmt.Errorf("%w: invalid status", ErrInvalidInput)
+	}
+
+	if err := validateRecurrence(input.RecurrenceType, input.RecurrenceInterval, input.RecurrenceDay, input.RecurrenceEvenOdd, input.RecurrenceDates); err != nil {
+		return UpdateInput{}, err
+	}
+
+	return input, nil
+}
+
+func validateRecurrence(rt taskdomain.RecurrenceType, interval *int, day *int, evenOdd *bool, dates []string) error {
+	switch rt {
+	case taskdomain.RecurrenceNone, "":
+		return nil
+	case taskdomain.RecurrenceDaily:
+		if interval == nil || *interval <= 0 {
+			return fmt.Errorf("%w: recurrence_interval must be positive for daily tasks", ErrInvalidInput)
+		}
+	case taskdomain.RecurrenceMonthly:
+		if day == nil || *day < 1 || *day > 30 {
+			return fmt.Errorf("%w: recurrence_day must be between 1 and 30 for monthly tasks", ErrInvalidInput)
+		}
+	case taskdomain.RecurrenceSpecific:
+		if len(dates) == 0 {
+			return fmt.Errorf("%w: recurrence_dates must not be empty for specific_dates tasks", ErrInvalidInput)
+		}
+		for _, d := range dates {
+			if _, err := time.Parse(taskdomain.DateFormat, d); err != nil {
+				return fmt.Errorf("%w: invalid date format in recurrence_dates (expected YYYY-MM-DD)", ErrInvalidInput)
+			}
+		}
+	case taskdomain.RecurrenceEvenOdd:
+		if evenOdd == nil {
+			return fmt.Errorf("%w: recurrence_even_odd is required for even_odd tasks", ErrInvalidInput)
+		}
+	default:
+		return fmt.Errorf("%w: invalid recurrence_type", ErrInvalidInput)
+	}
+	return nil
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\task\service_test.go
+Размер: 3,982 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+func TestValidateRecurrence(t *testing.T) {
+	tests := []struct {
+		name     string
+		rt       taskdomain.RecurrenceType
+		interval *int
+		day      *int
+		evenOdd  *bool
+		dates    []string
+		wantErr  bool
+	}{
+		{
+			name:    "none type - valid",
+			rt:      taskdomain.RecurrenceNone,
+			wantErr: false,
+		},
+		{
+			name:    "empty type - valid",
+			rt:      "",
+			wantErr: false,
+		},
+		{
+			name:     "daily with positive interval - valid",
+			rt:       taskdomain.RecurrenceDaily,
+			interval: intPtr(1),
+			wantErr:  false,
+		},
+		{
+			name:     "daily with interval 7 - valid",
+			rt:       taskdomain.RecurrenceDaily,
+			interval: intPtr(7),
+			wantErr:  false,
+		},
+		{
+			name:     "daily with zero interval - invalid",
+			rt:       taskdomain.RecurrenceDaily,
+			interval: intPtr(0),
+			wantErr:  true,
+		},
+		{
+			name:     "daily with negative interval - invalid",
+			rt:       taskdomain.RecurrenceDaily,
+			interval: intPtr(-1),
+			wantErr:  true,
+		},
+		{
+			name:    "daily without interval - invalid",
+			rt:      taskdomain.RecurrenceDaily,
+			wantErr: true,
+		},
+		{
+			name:    "monthly with valid day - valid",
+			rt:      taskdomain.RecurrenceMonthly,
+			day:     intPtr(15),
+			wantErr: false,
+		},
+		{
+			name:    "monthly with day 1 - valid",
+			rt:      taskdomain.RecurrenceMonthly,
+			day:     intPtr(1),
+			wantErr: false,
+		},
+		{
+			name:    "monthly with day 30 - valid",
+			rt:      taskdomain.RecurrenceMonthly,
+			day:     intPtr(30),
+			wantErr: false,
+		},
+		{
+			name:    "monthly with day 0 - invalid",
+			rt:      taskdomain.RecurrenceMonthly,
+			day:     intPtr(0),
+			wantErr: true,
+		},
+		{
+			name:    "monthly with day 31 - invalid",
+			rt:      taskdomain.RecurrenceMonthly,
+			day:     intPtr(31),
+			wantErr: true,
+		},
+		{
+			name:    "monthly without day - invalid",
+			rt:      taskdomain.RecurrenceMonthly,
+			wantErr: true,
+		},
+		{
+			name:    "specific_dates with valid dates - valid",
+			rt:      taskdomain.RecurrenceSpecific,
+			dates:   []string{"2026-04-01", "2026-04-15"},
+			wantErr: false,
+		},
+		{
+			name:    "specific_dates with single date - valid",
+			rt:      taskdomain.RecurrenceSpecific,
+			dates:   []string{"2026-04-01"},
+			wantErr: false,
+		},
+		{
+			name:    "specific_dates with empty dates - invalid",
+			rt:      taskdomain.RecurrenceSpecific,
+			dates:   []string{},
+			wantErr: true,
+		},
+		{
+			name:    "specific_dates with nil dates - invalid",
+			rt:      taskdomain.RecurrenceSpecific,
+			dates:   nil,
+			wantErr: true,
+		},
+		{
+			name:    "specific_dates with invalid date format - invalid",
+			rt:      taskdomain.RecurrenceSpecific,
+			dates:   []string{"01-04-2026"},
+			wantErr: true,
+		},
+		{
+			name:    "specific_dates with invalid date - invalid",
+			rt:      taskdomain.RecurrenceSpecific,
+			dates:   []string{"2026-13-01"},
+			wantErr: true,
+		},
+		{
+			name:    "even_odd with true - valid",
+			rt:      taskdomain.RecurrenceEvenOdd,
+			evenOdd: boolPtr(true),
+			wantErr: false,
+		},
+		{
+			name:    "even_odd with false - valid",
+			rt:      taskdomain.RecurrenceEvenOdd,
+			evenOdd: boolPtr(false),
+			wantErr: false,
+		},
+		{
+			name:    "even_odd without flag - invalid",
+			rt:      taskdomain.RecurrenceEvenOdd,
+			wantErr: true,
+		},
+		{
+			name:    "invalid recurrence type - invalid",
+			rt:      "invalid",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateRecurrence(tt.rt, tt.interval, tt.day, tt.evenOdd, tt.dates)
+			if tt.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func intPtr(v int) *int {
+	return &v
+}
+
+func boolPtr(v bool) *bool {
+	return &v
+}
+
+
+================================================================================
+📁 ПАПКА: dreadew/migrations/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: migrations\0001_create_tasks.up.sql
+Размер: 318 байт
+────────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS tasks (
+	id BIGSERIAL PRIMARY KEY,
+	title TEXT NOT NULL,
+	description TEXT NOT NULL DEFAULT '',
+	status TEXT NOT NULL,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks (status);
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: migrations\0002_add_recurrence_fields.down.sql
+Размер: 345 байт
+────────────────────────────────────────────────────────────────────────────────
+DROP INDEX IF EXISTS idx_tasks_recurrence_type;
+ALTER TABLE tasks DROP COLUMN IF EXISTS recurrence_type;
+ALTER TABLE tasks DROP COLUMN IF EXISTS recurrence_interval;
+ALTER TABLE tasks DROP COLUMN IF EXISTS recurrence_day;
+ALTER TABLE tasks DROP COLUMN IF EXISTS recurrence_even_odd;
+ALTER TABLE tasks DROP COLUMN IF EXISTS recurrence_dates;
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: migrations\0002_add_recurrence_fields.up.sql
+Размер: 454 байт
+────────────────────────────────────────────────────────────────────────────────
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS recurrence_type TEXT NOT NULL DEFAULT 'none';
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS recurrence_interval INTEGER;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS recurrence_day INTEGER;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS recurrence_even_odd BOOLEAN;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS recurrence_dates JSONB;
+
+CREATE INDEX IF NOT EXISTS idx_tasks_recurrence_type ON tasks (recurrence_type);
+
+================================================================================
+📁 ПАПКА: dreadew/scripts/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: scripts\test_api.sh
+Размер: 3,637 байт
+────────────────────────────────────────────────────────────────────────────────
+#!/bin/bash
+
+export LANG=C.UTF-8
+export LC_ALL=C.UTF-8
+export PYTHONIOENCODING=utf-8
+
+BASE_URL="http://localhost:8080/api/v1/tasks"
+
+json_pretty() {
+    python3 -c "import json,sys; print(json.dumps(json.load(sys.stdin), ensure_ascii=False, indent=2))"
+}
+
+echo "=== Тестирование API задач ==="
+echo
+
+echo "1. Создание задачи без периодичности"
+curl -s -X POST "$BASE_URL" \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Обычная задача", "description": "Описание", "status": "new"}' | json_pretty
+echo
+
+echo "2. Создание ежедневной задачи (каждый 1 день)"
+curl -s -X POST "$BASE_URL" \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Ежедневный обзвон", "description": "Обзвон пациентов", "status": "new", "recurrence_type": "daily", "recurrence_interval": 1}' | json_pretty
+echo
+
+echo "3. Создание задачи каждые 3 дня"
+curl -s -X POST "$BASE_URL" \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Проверка оборудования", "description": "Раз в 3 дня", "status": "new", "recurrence_type": "daily", "recurrence_interval": 3}' | json_pretty
+echo
+
+echo "4. Создание ежемесячной задачи (15 числа)"
+curl -s -X POST "$BASE_URL" \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Отчет за месяц", "description": "Формирование отчета", "status": "new", "recurrence_type": "monthly", "recurrence_day": 15}' | json_pretty
+echo
+
+echo "5. Создание задачи на конкретные даты"
+curl -s -X POST "$BASE_URL" \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Встреча с клиентом", "description": "Конкретные даты", "status": "new", "recurrence_type": "specific_dates", "recurrence_dates": ["2026-04-15", "2026-05-01", "2026-06-01"]}' | json_pretty
+echo
+
+echo "6. Создание задачи на чётные дни"
+curl -s -X POST "$BASE_URL" \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Инвентаризация", "description": "Только чётные дни", "status": "new", "recurrence_type": "even_odd", "recurrence_even_odd": true}' | json_pretty
+echo
+
+echo "7. Создание задачи на нечётные дни"
+curl -s -X POST "$BASE_URL" \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Планерка", "description": "Только нечётные дни", "status": "new", "recurrence_type": "even_odd", "recurrence_even_odd": false}' | json_pretty
+echo
+
+echo "8. Тест валидации - daily без interval (ожидается ошибка)"
+curl -s -X POST "$BASE_URL" \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Тест валидации", "status": "new", "recurrence_type": "daily"}' | json_pretty
+echo
+
+echo "9. Получение списка всех задач"
+curl -s "$BASE_URL" | json_pretty
+echo
+
+echo "10. Получение задачи по ID"
+curl -s "$BASE_URL/1" | json_pretty
+echo
+
+echo "11. Обновление задачи (добавление периодичности)"
+curl -s -X PUT "$BASE_URL/1" \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Обновленная задача", "description": "Добавлена периодичность", "status": "in_progress", "recurrence_type": "daily", "recurrence_interval": 2}' | json_pretty
+echo
+
+echo "=== Тестирование завершено ==="
+
+================================================================================
+СТАТИСТИКА ЭКСПОРТА
+================================================================================
+Всего обработано файлов: 26
+Всего пропущено файлов: 2
+Общий размер выходного файла: 89,188 байт

@@ -1,0 +1,2797 @@
+================================================================================
+ЭКСПОРТ РЕПОЗИТОРИЯ: Lunsee
+Путь: C:\Users\vladk\Desktop\test\forks\Lunsee
+Дата экспорта: 2026-04-14 01:14:50
+================================================================================
+
+
+================================================================================
+📁 ПАПКА: Lunsee/
+================================================================================
+
+[ПРОПУЩЕН] .dockerignore (бинарный/служебный/слишком большой)
+
+[ПРОПУЩЕН] .gitignore (бинарный/служебный/слишком большой)
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: Dockerfile
+Размер: 414 байт
+────────────────────────────────────────────────────────────────────────────────
+FROM golang:1.23.0-alpine AS builder
+
+WORKDIR /src
+
+RUN apk add --no-cache ca-certificates
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/taskservice ./cmd/api
+
+FROM alpine:3.21
+
+WORKDIR /app
+
+RUN apk add --no-cache ca-certificates
+
+COPY --from=builder /out/taskservice /app/taskservice
+
+EXPOSE 8080
+
+CMD ["/app/taskservice"]
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: README.md
+Размер: 6,580 байт
+────────────────────────────────────────────────────────────────────────────────
+# Task Service
+
+Сервис для управления задачами с HTTP API на Go.
+
+## Принцип работы
+
+**Периодичность** и **конкретные задачи в трекере** разделены: правило хранится в `task_series` (тип повтора и параметры), а каждое «сделать сегодня / в этот день» — отдельная строка в `tasks`. Когда по правилу наступает нужный календарный день и время (`schedule_time` в параметрах серии), фоновый планировщик **создаёт** такую задачу и проставляет связь `series_id` и день вхождения `occurrence_on`. Дальше её жизненный цикл такой же, как у обычной: **выполнил** — меняешь статус через `PUT /api/v1/tasks/{id}` (например на `done`); правило периодичности при этом не трогаешь.
+
+**Архитектура:** запросы к API проходят через транспорт (HTTP handlers) → сценарии (use case) → доступ к данным (репозиторий PostgreSQL). Генерация задач по расписанию вынесена в отдельный сценарий и вызывается планировщиком по таймеру, без участия HTTP.
+
+## Требования
+
+- Go `1.23+`
+- Docker и Docker Compose
+
+## Быстрый запуск через Docker Compose
+
+```bash
+docker compose up --build
+```
+
+После запуска сервис будет доступен по адресу `http://localhost:8080`.
+
+Если `postgres` уже запускался ранее со старой схемой, пересоздай volume:
+
+```bash
+docker compose down -v
+docker compose up --build
+```
+
+Причина в том, что SQL-файлы из `migrations/*.up.sql` монтируются в `docker-entrypoint-initdb.d` и применяются только при инициализации пустого data volume.
+
+## Swagger
+
+Swagger UI:
+
+```text
+http://localhost:8080/swagger/
+```
+
+OpenAPI JSON:
+
+```text
+http://localhost:8080/swagger/openapi.json
+```
+
+## API
+
+Базовый префикс API:
+
+```text
+/api/v1
+```
+
+Основные маршруты:
+
+- `POST /api/v1/tasks`
+- `GET /api/v1/tasks`
+- `GET /api/v1/tasks/{id}`
+- `PUT /api/v1/tasks/{id}`
+- `DELETE /api/v1/tasks/{id}`
+
+У сгенерированных по серии задач в ответе могут быть поля `series_id` и `occurrence_on`.
+
+Правила периодичности (серии задач):
+
+- `POST /api/v1/task-series`
+- `GET /api/v1/task-series`
+- `GET /api/v1/task-series/{id}`
+- `PUT /api/v1/task-series/{id}`
+- `DELETE /api/v1/task-series/{id}`
+
+## Периодичность
+
+Тип периодичности задаётся полем `recurrence_type` и JSON `params` при создании/обновлении серии. Допустимые значения `recurrence_type`: `every_n_days`, `monthly_day`, `specific_dates`, `even_odd`. В `params` задаются параметры для выбранного типа (например `interval_days`, `anchor_date`, `day_of_month`, `dates`, `parity`), а также при необходимости `timezone` (IANA) и `schedule_time` (`HH:MM`) для окна генерации.
+
+Фоновый планировщик периодически создаёт строки в `tasks`, связывая их с серией через `series_id` и указывая календарный день в `occurrence_on`. Ручное создание задачи через `POST /api/v1/tasks` по-прежнему без периодичности; `series_id` в запрос не передаётся.
+
+### Планировщик и время (`schedule_time`) (устроено с помощью реализации тикера)
+
+Планировщик запускает генерацию **каждую минуту** — так проще не пропустить заданное в интерфейсе время задачи с точностью до **минуты** (`HH:MM` в `params.schedule_time`).
+
+Механизм:
+
+1. Берётся часовой пояс серии из `params.timezone` (IANA, иначе UTC). Текущий момент переводится в это время — все сравнения **по локальным часам и минутам** этого дня.
+2. Сначала проверяется **календарный день** по типу периодичности (`recurrence_type` и остальной `params`).
+3. Затем проверяется **окно времени**: минуты суток «сейчас» должны попасть в полуинтервал **от `schedule_time` включительно до той же величины плюс одна минута** (не включая следующую минуту). Формально: если `schedule_time` = `09:15`, подходит локальное время с `09:15:00` до `09:15:59` (в коде — сравнение целых минут от полуночи).
+4. Если оба условия выполнены — создаётся строка в `tasks` (при отсутствии дубликата на этот день для серии). Ширина окна совпадает с интервалом тика (одна минута), поэтому частота опроса и точность задания времени согласованы.
+
+## Переменные окружения
+
+- `HTTP_ADDR` — адрес HTTP-сервера (по умолчанию `:8080`).
+- `DATABASE_DSN` — строка подключения к PostgreSQL.
+
+## Миграции БД
+
+Помимо начальной таблицы `tasks`, добавлены миграции `0002_create_task_series.up.sql` (таблица `task_series`) и `0003_alter_tasks_add_series.up.sql` (колонки `series_id`, `occurrence_on` в `tasks`). На уже существующий volume их нужно применить вручную или пересоздать volume, как в разделе про Docker Compose выше.
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: docker-compose.yml
+Размер: 1,076 байт
+────────────────────────────────────────────────────────────────────────────────
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: taskservice
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d taskservice"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations/0001_create_tasks.up.sql:/docker-entrypoint-initdb.d/001_create_tasks.sql:ro
+      - ./migrations/0002_create_task_series.up.sql:/docker-entrypoint-initdb.d/002_create_task_series.sql:ro
+      - ./migrations/0003_alter_tasks_add_series.up.sql:/docker-entrypoint-initdb.d/003_alter_tasks_add_series.sql:ro
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      HTTP_ADDR: :8080
+      DATABASE_DSN: postgres://postgres:postgres@postgres:5432/taskservice?sslmode=disable
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: go.mod
+Размер: 441 байт
+────────────────────────────────────────────────────────────────────────────────
+module example.com/taskservice
+
+go 1.23.0
+
+require (
+	github.com/gorilla/mux v1.8.1
+	github.com/jackc/pgx/v5 v5.7.6
+)
+
+require (
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
+	golang.org/x/crypto v0.37.0 // indirect
+	golang.org/x/sync v0.13.0 // indirect
+	golang.org/x/text v0.24.0 // indirect
+)
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: go.sum
+Размер: 2,649 байт
+────────────────────────────────────────────────────────────────────────────────
+github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
+github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/gorilla/mux v1.8.1 h1:TuBL49tXwgrFYWhqrNgrUNEY92u81SPhu7sTdzQEiWY=
+github.com/gorilla/mux v1.8.1/go.mod h1:AKf9I4AEqPTmMytcMc0KkNouC66V3BtZ4qD5fmWSiMQ=
+github.com/jackc/pgpassfile v1.0.0 h1:/6Hmqy13Ss2zCq62VdNG8tM1wchn8zjSGOBJ6icpsIM=
+github.com/jackc/pgpassfile v1.0.0/go.mod h1:CEx0iS5ambNFdcRtxPj5JhEz+xB6uRky5eyVu/W2HEg=
+github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 h1:iCEnooe7UlwOQYpKFhBabPMi4aNAfoODPEFNiAnClxo=
+github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761/go.mod h1:5TJZWKEWniPve33vlWYSoGYefn3gLQRzjfDlhSJ9ZKM=
+github.com/jackc/pgx/v5 v5.7.6 h1:rWQc5FwZSPX58r1OQmkuaNicxdmExaEz5A2DO2hUuTk=
+github.com/jackc/pgx/v5 v5.7.6/go.mod h1:aruU7o91Tc2q2cFp5h4uP3f6ztExVpyVv88Xl/8Vl8M=
+github.com/jackc/puddle/v2 v2.2.2 h1:PR8nw+E/1w0GLuRFSmiioY6UooMp6KJv0/61nB7icHo=
+github.com/jackc/puddle/v2 v2.2.2/go.mod h1:vriiEXHvEE654aYKXXjOvZM39qJ0q+azkZFrfEOc3H4=
+github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
+github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
+github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
+github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UVUgZn+9EI=
+github.com/stretchr/testify v1.7.0/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
+github.com/stretchr/testify v1.8.1 h1:w7B6lhMri9wdJUVmEZPGGhZzrYTPvgJArz7wNPgYKsk=
+github.com/stretchr/testify v1.8.1/go.mod h1:w2LPCIKwWwSfY2zedu0+kehJoqGctiVI29o6fzry7u4=
+golang.org/x/crypto v0.37.0 h1:kJNSjF/Xp7kU0iB2Z+9viTPMW4EqqsrywMXLJOOsXSE=
+golang.org/x/crypto v0.37.0/go.mod h1:vg+k43peMZ0pUMhYmVAWysMK35e6ioLh3wB8ZCAfbVc=
+golang.org/x/sync v0.13.0 h1:AauUjRAJ9OSnvULf/ARrrVywoJDy0YS2AwQ98I37610=
+golang.org/x/sync v0.13.0/go.mod h1:1dzgHSNfp02xaA81J2MS99Qcpr2w7fw1gpm99rleRqA=
+golang.org/x/text v0.24.0 h1:dd5Bzh4yt5KYA8f9CJHCP4FB4D51c2c6JvN37xJJkJ0=
+golang.org/x/text v0.24.0/go.mod h1:L8rBsPeo2pSS+xqN0d5u2ikmjtmoJbDBT1b7nHvFCdU=
+gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
+gopkg.in/yaml.v3 v3.0.0-20200313102051-9f266ea9e77c/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
+gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+
+
+================================================================================
+📁 ПАПКА: Lunsee/cmd/
+================================================================================
+
+================================================================================
+📁 ПАПКА: Lunsee/cmd\api/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: cmd\api\main.go
+Размер: 3,116 байт
+────────────────────────────────────────────────────────────────────────────────
+package main
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	infrastructurepostgres "example.com/taskservice/internal/infrastructure/postgres"
+	postgresrepo "example.com/taskservice/internal/repository/postgres"
+	"example.com/taskservice/internal/scheduler"
+	transporthttp "example.com/taskservice/internal/transport/http"
+	swaggerdocs "example.com/taskservice/internal/transport/http/docs"
+	httphandlers "example.com/taskservice/internal/transport/http/handlers"
+	"example.com/taskservice/internal/usecase/task"
+	"example.com/taskservice/internal/usecase/taskgen"
+	taskseries "example.com/taskservice/internal/usecase/taskseries"
+)
+
+// schedulerInterval — период вызова генерации и ширина окна совпадения с schedule_time (одна минута).
+const schedulerInterval = 1 * time.Minute
+
+func main() {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
+
+	cfg := loadConfig()
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	pool, err := infrastructurepostgres.Open(ctx, cfg.DatabaseDSN)
+	if err != nil {
+		logger.Error("open postgres", "error", err)
+		os.Exit(1)
+	}
+	defer pool.Close()
+
+	taskRepo := postgresrepo.New(pool)
+	taskSeriesRepo := postgresrepo.NewTaskSeriesRepository(pool)
+	taskUsecase := task.NewService(taskRepo)
+	taskSeriesUsecase := taskseries.NewService(taskSeriesRepo)
+
+	gen := taskgen.NewProcessor(taskRepo, taskSeriesRepo, schedulerInterval)
+
+	taskHandler := httphandlers.NewTaskHandler(taskUsecase)
+	taskSeriesHandler := httphandlers.NewTaskSeriesHandler(taskSeriesUsecase)
+	docsHandler := swaggerdocs.NewHandler()
+	router := transporthttp.NewRouter(taskHandler, taskSeriesHandler, docsHandler)
+
+	taskTicker := scheduler.NewTaskTicker(gen, logger)
+	go taskTicker.Run(ctx, schedulerInterval)
+
+	server := &http.Server{
+		Addr:              cfg.HTTPAddr,
+		Handler:           router,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	go func() {
+		<-ctx.Done()
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			logger.Error("shutdown http server", "error", err)
+		}
+	}()
+
+	logger.Info("http server started", "addr", cfg.HTTPAddr)
+
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		logger.Error("listen and serve", "error", err)
+		os.Exit(1)
+	}
+}
+
+type config struct {
+	HTTPAddr    string
+	DatabaseDSN string
+}
+
+func loadConfig() config {
+	cfg := config{
+		HTTPAddr:    envOrDefault("HTTP_ADDR", ":8080"),
+		DatabaseDSN: envOrDefault("DATABASE_DSN", "postgres://postgres:postgres@localhost:5432/taskservice?sslmode=disable"),
+	}
+
+	if cfg.DatabaseDSN == "" {
+		panic(fmt.Errorf("DATABASE_DSN is required"))
+	}
+
+	return cfg
+}
+
+func envOrDefault(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+
+	return fallback
+}
+
+
+================================================================================
+📁 ПАПКА: Lunsee/internal/
+================================================================================
+
+================================================================================
+📁 ПАПКА: Lunsee/internal\domain/
+================================================================================
+
+================================================================================
+📁 ПАПКА: Lunsee/internal\domain\task/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\domain\task\errors.go
+Размер: 83 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import "errors"
+
+var ErrNotFound = errors.New("task not found")
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\domain\task\task.go
+Размер: 707 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import "time"
+
+type Status string
+
+const (
+	StatusNew        Status = "new"
+	StatusInProgress Status = "in_progress"
+	StatusDone       Status = "done"
+)
+
+type Task struct {
+	ID          int64     `json:"id"`
+	Title       string    `json:"title"`
+	Description string    `json:"description"`
+	Status      Status    `json:"status"`
+	SeriesID    *int64    `json:"series_id,omitempty"`
+	OccurrenceOn *time.Time `json:"occurrence_on,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+func (s Status) Valid() bool {
+	switch s {
+	case StatusNew, StatusInProgress, StatusDone:
+		return true
+	default:
+		return false
+	}
+}
+
+
+================================================================================
+📁 ПАПКА: Lunsee/internal\domain\taskseries/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\domain\taskseries\errors.go
+Размер: 96 байт
+────────────────────────────────────────────────────────────────────────────────
+package taskseries
+
+import "errors"
+
+var ErrNotFound = errors.New("task series not found")
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\domain\taskseries\match.go
+Размер: 5,418 байт
+────────────────────────────────────────────────────────────────────────────────
+package taskseries
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+)
+
+// CommonParams — общие поля в JSON params: час запуска в сутках и IANA-часовой пояс.
+// Если timezone пуст — используется UTC. schedule_time — "HH:MM" (по умолчанию "00:00").
+type CommonParams struct {
+	Timezone     string `json:"timezone"`
+	ScheduleTime string `json:"schedule_time"`
+}
+
+// LoadLocation возвращает *time.Location для IANA-имени или UTC.
+func LoadLocation(params json.RawMessage) (*time.Location, error) {
+	var c CommonParams
+	if err := json.Unmarshal(params, &c); err != nil {
+		return time.UTC, err
+	}
+
+	if strings.TrimSpace(c.Timezone) == "" {
+		return time.UTC, nil
+	}
+
+	loc, err := time.LoadLocation(c.Timezone)
+	if err != nil {
+		return nil, fmt.Errorf("invalid timezone: %w", err)
+	}
+
+	return loc, nil
+}
+
+// WithinScheduleWindow — попадает ли «сейчас» в окно [schedule, schedule+window) по локальным минутам суток.
+// window задаётся той же длительностью, что интервал планировщика (1m): одна минута начиная с schedule_time.
+func WithinScheduleWindow(localNow time.Time, params json.RawMessage, tick time.Duration) (bool, error) {
+	var c CommonParams
+	if err := json.Unmarshal(params, &c); err != nil {
+		return false, err
+	}
+
+	sched := strings.TrimSpace(c.ScheduleTime)
+	if sched == "" {
+		sched = "00:00"
+	}
+
+	sh, sm, err := parseClock(sched)
+	if err != nil {
+		return false, err
+	}
+
+	schedMin := sh*60 + sm
+	nh, nm := localNow.Hour(), localNow.Minute()
+	nowMin := nh*60 + nm
+
+	tickMin := int(tick / time.Minute)
+	if tickMin < 1 {
+		tickMin = 1
+	}
+
+	if nowMin >= schedMin && nowMin < schedMin+tickMin {
+		return true, nil
+	}
+
+	return false, nil
+}
+
+func parseClock(s string) (hour, min int, err error) {
+	var h, m int
+	n, err := fmt.Sscanf(s, "%d:%d", &h, &m)
+	if err != nil || n != 2 {
+		return 0, 0, fmt.Errorf("invalid schedule_time %q", s)
+	}
+
+	if h < 0 || h > 23 || m < 0 || m > 59 {
+		return 0, 0, fmt.Errorf("schedule_time out of range")
+	}
+
+	return h, m, nil
+}
+
+// OccursOnCalendarDate проверяет, выпадает ли календарный день localDate на правило периодичности.
+// localDate должен быть в нужной локали (обычно now.In(loc)).
+func OccursOnCalendarDate(recurrence RecurrenceType, params json.RawMessage, localDate time.Time) (bool, error) {
+	y, m, d := localDate.Date()
+	dayStart := time.Date(y, m, d, 12, 0, 0, 0, localDate.Location())
+
+	switch recurrence {
+	case RecurrenceEveryNDays:
+		return matchEveryNDays(params, dayStart)
+	case RecurrenceMonthlyDay:
+		return matchMonthlyDay(params, dayStart)
+	case RecurrenceSpecificDates:
+		return matchSpecificDates(params, dayStart)
+	case RecurrenceEvenOdd:
+		return matchEvenOdd(params, dayStart)
+	default:
+		return false, nil
+	}
+}
+
+type everyNDaysParams struct {
+	IntervalDays int    `json:"interval_days"`
+	AnchorDate     string `json:"anchor_date"`
+}
+
+func matchEveryNDays(params json.RawMessage, day time.Time) (bool, error) {
+	var p everyNDaysParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return false, err
+	}
+
+	if p.IntervalDays < 1 {
+		return false, nil
+	}
+
+	loc := day.Location()
+	anchor, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(p.AnchorDate), loc)
+	if err != nil {
+		return false, err
+	}
+
+	ay, am, ad := anchor.Date()
+	anchorDay := time.Date(ay, am, ad, 12, 0, 0, 0, loc)
+	dy, dm, dd := day.Date()
+	targetDay := time.Date(dy, dm, dd, 12, 0, 0, 0, loc)
+
+	days := int(targetDay.Sub(anchorDay).Hours() / 24)
+	if days < 0 {
+		return false, nil
+	}
+
+	return days%p.IntervalDays == 0, nil
+}
+
+type monthlyDayParams struct {
+	DayOfMonth int `json:"day_of_month"`
+}
+
+func matchMonthlyDay(params json.RawMessage, day time.Time) (bool, error) {
+	var p monthlyDayParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return false, err
+	}
+
+	if p.DayOfMonth < 1 || p.DayOfMonth > 30 {
+		return false, nil
+	}
+
+	return day.Day() == p.DayOfMonth, nil
+}
+
+type specificDatesParams struct {
+	Dates []string `json:"dates"`
+}
+
+func matchSpecificDates(params json.RawMessage, day time.Time) (bool, error) {
+	var p specificDatesParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return false, err
+	}
+
+	loc := day.Location()
+	y, m, d := day.Date()
+	want := time.Date(y, m, d, 0, 0, 0, 0, loc).Format("2006-01-02")
+
+	for _, ds := range p.Dates {
+		ds = strings.TrimSpace(ds)
+		if ds == "" {
+			continue
+		}
+
+		t, err := time.ParseInLocation("2006-01-02", ds, loc)
+		if err != nil {
+			continue
+		}
+
+		if t.Format("2006-01-02") == want {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+type evenOddParams struct {
+	Parity string `json:"parity"`
+}
+
+func matchEvenOdd(params json.RawMessage, day time.Time) (bool, error) {
+	var p evenOddParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return false, err
+	}
+
+	dayNum := day.Day()
+	isEven := dayNum%2 == 0
+
+	switch strings.ToLower(strings.TrimSpace(p.Parity)) {
+	case "even":
+		return isEven, nil
+	case "odd":
+		return !isEven, nil
+	default:
+		return false, nil
+	}
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\domain\taskseries\series.go
+Размер: 1,396 байт
+────────────────────────────────────────────────────────────────────────────────
+package taskseries
+
+import (
+	"encoding/json"
+	"time"
+)
+
+// RecurrenceType задаёт правило периодичности серии (хранится в task_series.recurrence_type).
+type RecurrenceType string
+
+const (
+	RecurrenceEveryNDays    RecurrenceType = "every_n_days"
+	RecurrenceMonthlyDay    RecurrenceType = "monthly_day"
+	RecurrenceSpecificDates RecurrenceType = "specific_dates"
+	RecurrenceEvenOdd       RecurrenceType = "even_odd"
+)
+
+// TaskSeries представляет собой серию задач с периодичностью.
+type TaskSeries struct {
+	ID             int64           `json:"id"`
+	Title          string          `json:"title"`
+	Description    string          `json:"description"`
+	RecurrenceType RecurrenceType  `json:"recurrence_type"`
+	Params         json.RawMessage `json:"params"`
+	IsActive       bool            `json:"is_active"`
+	CreatedAt      time.Time       `json:"created_at"`
+	UpdatedAt      time.Time       `json:"updated_at"`
+}
+
+// Valid проверяет, является ли RecurrenceType допустимым.
+// входные данные: RecurrenceType
+// выходные данные: bool
+func (r RecurrenceType) Valid() bool {
+	switch r {
+	case RecurrenceEveryNDays, RecurrenceMonthlyDay, RecurrenceSpecificDates, RecurrenceEvenOdd:
+		return true
+	default:
+		return false
+	}
+}
+
+
+================================================================================
+📁 ПАПКА: Lunsee/internal\infrastructure/
+================================================================================
+
+================================================================================
+📁 ПАПКА: Lunsee/internal\infrastructure\postgres/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\infrastructure\postgres\pool.go
+Размер: 512 байт
+────────────────────────────────────────────────────────────────────────────────
+package postgres
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+func Open(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
+	if dsn == "" {
+		return nil, fmt.Errorf("database dsn is empty")
+	}
+
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, err
+	}
+
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, err
+	}
+
+	return pool, nil
+}
+
+
+================================================================================
+📁 ПАПКА: Lunsee/internal\repository/
+================================================================================
+
+================================================================================
+📁 ПАПКА: Lunsee/internal\repository\postgres/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\repository\postgres\task_repository.go
+Размер: 3,790 байт
+────────────────────────────────────────────────────────────────────────────────
+package postgres
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type Repository struct {
+	pool *pgxpool.Pool
+}
+
+func New(pool *pgxpool.Pool) *Repository {
+	return &Repository{pool: pool}
+}
+
+func (r *Repository) Create(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error) {
+	const query = `
+		INSERT INTO tasks (title, description, status, created_at, updated_at, series_id, occurrence_on)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id, title, description, status, created_at, updated_at, series_id, occurrence_on
+	`
+
+	row := r.pool.QueryRow(ctx, query,
+		task.Title,
+		task.Description,
+		task.Status,
+		task.CreatedAt,
+		task.UpdatedAt,
+		nullSeriesID(task.SeriesID),
+		nullTimeDate(task.OccurrenceOn),
+	)
+	created, err := scanTask(row)
+	if err != nil {
+		return nil, err
+	}
+
+	return created, nil
+}
+
+func (r *Repository) GetByID(ctx context.Context, id int64) (*taskdomain.Task, error) {
+	const query = `
+		SELECT id, title, description, status, created_at, updated_at, series_id, occurrence_on
+		FROM tasks
+		WHERE id = $1
+	`
+
+	row := r.pool.QueryRow(ctx, query, id)
+	found, err := scanTask(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, taskdomain.ErrNotFound
+		}
+
+		return nil, err
+	}
+
+	return found, nil
+}
+
+func (r *Repository) Update(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error) {
+	const query = `
+		UPDATE tasks
+		SET title = $1,
+			description = $2,
+			status = $3,
+			updated_at = $4
+		WHERE id = $5
+		RETURNING id, title, description, status, created_at, updated_at, series_id, occurrence_on
+	`
+
+	row := r.pool.QueryRow(ctx, query, task.Title, task.Description, task.Status, task.UpdatedAt, task.ID)
+	updated, err := scanTask(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, taskdomain.ErrNotFound
+		}
+
+		return nil, err
+	}
+
+	return updated, nil
+}
+
+func (r *Repository) Delete(ctx context.Context, id int64) error {
+	const query = `DELETE FROM tasks WHERE id = $1`
+
+	result, err := r.pool.Exec(ctx, query, id)
+	if err != nil {
+		return err
+	}
+
+	if result.RowsAffected() == 0 {
+		return taskdomain.ErrNotFound
+	}
+
+	return nil
+}
+
+func (r *Repository) List(ctx context.Context) ([]taskdomain.Task, error) {
+	const query = `
+		SELECT id, title, description, status, created_at, updated_at, series_id, occurrence_on
+		FROM tasks
+		ORDER BY id DESC
+	`
+
+	rows, err := r.pool.Query(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	tasks := make([]taskdomain.Task, 0)
+	for rows.Next() {
+		task, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+
+		tasks = append(tasks, *task)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return tasks, nil
+}
+
+type taskScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanTask(scanner taskScanner) (*taskdomain.Task, error) {
+	var (
+		task    taskdomain.Task
+		status  string
+		seriesID sql.NullInt64
+		occOn   sql.NullTime
+	)
+
+	if err := scanner.Scan(
+		&task.ID,
+		&task.Title,
+		&task.Description,
+		&status,
+		&task.CreatedAt,
+		&task.UpdatedAt,
+		&seriesID,
+		&occOn,
+	); err != nil {
+		return nil, err
+	}
+
+	task.Status = taskdomain.Status(status)
+	if seriesID.Valid {
+		v := seriesID.Int64
+		task.SeriesID = &v
+	}
+
+	if occOn.Valid {
+		t := occOn.Time
+		task.OccurrenceOn = &t
+	}
+
+	return &task, nil
+}
+
+func nullSeriesID(id *int64) any {
+	if id == nil {
+		return nil
+	}
+
+	return *id
+}
+
+func nullTimeDate(t *time.Time) any {
+	if t == nil {
+		return nil
+	}
+
+	return *t
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\repository\postgres\task_series_repository.go
+Размер: 5,117 байт
+────────────────────────────────────────────────────────────────────────────────
+package postgres
+
+import (
+	"context"
+	"errors"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	taskseriesdomain "example.com/taskservice/internal/domain/taskseries"
+)
+
+type TaskSeriesRepository struct {
+	pool *pgxpool.Pool
+}
+
+func NewTaskSeriesRepository(pool *pgxpool.Pool) *TaskSeriesRepository {
+	return &TaskSeriesRepository{pool: pool}
+}
+
+// Создает новую серию задач.
+// входные данные: ctx context.Context, series *taskseriesdomain.TaskSeries
+// выходные данные: *taskseriesdomain.TaskSeries, error
+func (r *TaskSeriesRepository) Create(ctx context.Context, series *taskseriesdomain.TaskSeries) (*taskseriesdomain.TaskSeries, error) {
+	const query = `
+		INSERT INTO task_series (title, description, recurrence_type, params, is_active, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id, title, description, recurrence_type, params, is_active, created_at, updated_at
+	`
+
+	row := r.pool.QueryRow(ctx, query,
+		series.Title,
+		series.Description,
+		series.RecurrenceType,
+		series.Params,
+		series.IsActive,
+		series.CreatedAt,
+		series.UpdatedAt,
+	)
+
+	return scanTaskSeries(row)
+}
+
+// Получает серию задач по ID.
+// входные данные: ctx context.Context, id int64
+// выходные данные: *taskseriesdomain.TaskSeries, error
+func (r *TaskSeriesRepository) GetByID(ctx context.Context, id int64) (*taskseriesdomain.TaskSeries, error) {
+	const query = `
+		SELECT id, title, description, recurrence_type, params, is_active, created_at, updated_at
+		FROM task_series
+		WHERE id = $1
+	`
+
+	row := r.pool.QueryRow(ctx, query, id)
+	found, err := scanTaskSeries(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, taskseriesdomain.ErrNotFound
+		}
+
+		return nil, err
+	}
+
+	return found, nil
+}
+
+// Обновляет серию задач.
+// входные данные: ctx context.Context, series *taskseriesdomain.TaskSeries
+// выходные данные: *taskseriesdomain.TaskSeries, error
+func (r *TaskSeriesRepository) Update(ctx context.Context, series *taskseriesdomain.TaskSeries) (*taskseriesdomain.TaskSeries, error) {
+	const query = `
+		UPDATE task_series
+		SET title = $1,
+			description = $2,
+			recurrence_type = $3,
+			params = $4,
+			is_active = $5,
+			updated_at = $6
+		WHERE id = $7
+		RETURNING id, title, description, recurrence_type, params, is_active, created_at, updated_at
+	`
+
+	row := r.pool.QueryRow(ctx, query,
+		series.Title,
+		series.Description,
+		series.RecurrenceType,
+		series.Params,
+		series.IsActive,
+		series.UpdatedAt,
+		series.ID,
+	)
+
+	updated, err := scanTaskSeries(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, taskseriesdomain.ErrNotFound
+		}
+
+		return nil, err
+	}
+
+	return updated, nil
+}
+
+// Удаляет серию задач.
+// входные данные: ctx context.Context, id int64
+// выходные данные: error
+func (r *TaskSeriesRepository) Delete(ctx context.Context, id int64) error {
+	const query = `DELETE FROM task_series WHERE id = $1`
+
+	result, err := r.pool.Exec(ctx, query, id)
+	if err != nil {
+		return err
+	}
+
+	if result.RowsAffected() == 0 {
+		return taskseriesdomain.ErrNotFound
+	}
+
+	return nil
+}
+
+// Получает список всех серий задач.
+// входные данные: ctx context.Context
+// выходные данные: []taskseriesdomain.TaskSeries, error
+func (r *TaskSeriesRepository) List(ctx context.Context) ([]taskseriesdomain.TaskSeries, error) {
+	const query = `
+		SELECT id, title, description, recurrence_type, params, is_active, created_at, updated_at
+		FROM task_series
+		ORDER BY id DESC
+	`
+
+	rows, err := r.pool.Query(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	list := make([]taskseriesdomain.TaskSeries, 0)
+	for rows.Next() {
+		item, err := scanTaskSeries(rows)
+		if err != nil {
+			return nil, err
+		}
+
+		list = append(list, *item)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return list, nil
+}
+
+// Сканирует серию задач из строки.
+// входные данные: scanner taskSeriesScanner
+// выходные данные: *taskseriesdomain.TaskSeries, error
+type taskSeriesScanner interface {
+	Scan(dest ...any) error
+}
+
+// Сканирует серию задач из строки.
+// входные данные: scanner taskSeriesScanner
+// выходные данные: *taskseriesdomain.TaskSeries, error
+func scanTaskSeries(scanner taskSeriesScanner) (*taskseriesdomain.TaskSeries, error) {
+	var (
+		s              taskseriesdomain.TaskSeries
+		recurrenceType string
+	)
+
+	if err := scanner.Scan(
+		&s.ID,
+		&s.Title,
+		&s.Description,
+		&recurrenceType,
+		&s.Params,
+		&s.IsActive,
+		&s.CreatedAt,
+		&s.UpdatedAt,
+	); err != nil {
+		return nil, err
+	}
+
+	s.RecurrenceType = taskseriesdomain.RecurrenceType(recurrenceType)
+
+	return &s, nil
+}
+
+
+================================================================================
+📁 ПАПКА: Lunsee/internal\scheduler/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\scheduler\errors.go
+Размер: 253 байт
+────────────────────────────────────────────────────────────────────────────────
+package scheduler
+
+import "errors"
+
+// ErrStopped возвращается, если остановка планировщика ожидаема (например отмена контекста).
+var ErrStopped = errors.New("scheduler stopped")
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\scheduler\ticker.go
+Размер: 1,838 байт
+────────────────────────────────────────────────────────────────────────────────
+package scheduler
+
+import (
+	"context"
+	"log/slog"
+	"time"
+)
+
+// TickProcessor сценарий одного прохода планировщика (обычно usecase/taskgen).
+type TickProcessor interface {
+	ProcessTick(ctx context.Context) error
+}
+
+// TaskTicker вызывает processor с заданным интервалом.
+type TaskTicker struct {
+	processor TickProcessor
+	logger    *slog.Logger
+}
+
+// Создает новый TaskTicker.
+// Если logger == nil, то используется slog.Default().
+// входные данные: processor TickProcessor, logger *slog.Logger
+// выходные данные: *TaskTicker
+func NewTaskTicker(processor TickProcessor, logger *slog.Logger) *TaskTicker {
+	if logger == nil {
+		logger = slog.Default()
+	}
+
+	return &TaskTicker{processor: processor, logger: logger}
+}
+
+// Run блокируется до отмены ctx.
+// Вызывает ProcessTick каждый интервал.
+// Если ctx отменяется, то планировщик останавливается.
+// входные данные: ctx context.Context, interval time.Duration
+// выходные данные: void
+func (t *TaskTicker) Run(ctx context.Context, interval time.Duration) {
+	tick := time.NewTicker(interval)
+	defer tick.Stop()
+
+	t.runOnce(ctx)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			t.runOnce(ctx)
+		}
+	}
+}
+
+// Вызывает ProcessTick один раз.
+// Если есть ошибка, то логирует ее.
+// входные данные: ctx context.Context
+// выходные данные: void
+func (t *TaskTicker) runOnce(ctx context.Context) {
+	if err := t.processor.ProcessTick(ctx); err != nil {
+		t.logger.Error("task generation tick", "error", err)
+	}
+}
+
+
+================================================================================
+📁 ПАПКА: Lunsee/internal\transport/
+================================================================================
+
+================================================================================
+📁 ПАПКА: Lunsee/internal\transport\http/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\router.go
+Размер: 1,643 байт
+────────────────────────────────────────────────────────────────────────────────
+package transporthttp
+
+import (
+	"net/http"
+
+	"github.com/gorilla/mux"
+
+	swaggerdocs "example.com/taskservice/internal/transport/http/docs"
+	httphandlers "example.com/taskservice/internal/transport/http/handlers"
+)
+
+func NewRouter(
+	taskHandler *httphandlers.TaskHandler,
+	taskSeriesHandler *httphandlers.TaskSeriesHandler,
+	docsHandler *swaggerdocs.Handler,
+) *mux.Router {
+	router := mux.NewRouter().StrictSlash(true)
+
+	router.HandleFunc("/swagger/openapi.json", docsHandler.ServeSpec).Methods(http.MethodGet)
+	router.HandleFunc("/swagger/", docsHandler.ServeUI).Methods(http.MethodGet)
+	router.HandleFunc("/swagger", docsHandler.RedirectToUI).Methods(http.MethodGet)
+
+	api := router.PathPrefix("/api/v1").Subrouter()
+
+	api.HandleFunc("/tasks", taskHandler.Create).Methods(http.MethodPost)
+	api.HandleFunc("/tasks", taskHandler.List).Methods(http.MethodGet)
+	api.HandleFunc("/tasks/{id:[0-9]+}", taskHandler.GetByID).Methods(http.MethodGet)
+	api.HandleFunc("/tasks/{id:[0-9]+}", taskHandler.Update).Methods(http.MethodPut)
+	api.HandleFunc("/tasks/{id:[0-9]+}", taskHandler.Delete).Methods(http.MethodDelete)
+
+	// серии задач
+	api.HandleFunc("/task-series", taskSeriesHandler.Create).Methods(http.MethodPost)
+	api.HandleFunc("/task-series", taskSeriesHandler.List).Methods(http.MethodGet)
+	api.HandleFunc("/task-series/{id:[0-9]+}", taskSeriesHandler.GetByID).Methods(http.MethodGet)
+	api.HandleFunc("/task-series/{id:[0-9]+}", taskSeriesHandler.Update).Methods(http.MethodPut)
+	api.HandleFunc("/task-series/{id:[0-9]+}", taskSeriesHandler.Delete).Methods(http.MethodDelete)
+
+	return router
+}
+
+
+================================================================================
+📁 ПАПКА: Lunsee/internal\transport\http\docs/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\docs\handler.go
+Размер: 1,779 байт
+────────────────────────────────────────────────────────────────────────────────
+package docs
+
+import (
+	"embed"
+	"net/http"
+)
+
+//go:embed openapi.json
+var openAPISpec embed.FS
+
+type Handler struct {
+	spec []byte
+}
+
+func NewHandler() *Handler {
+	spec, err := openAPISpec.ReadFile("openapi.json")
+	if err != nil {
+		panic(err)
+	}
+
+	return &Handler{spec: spec}
+}
+
+func (h *Handler) ServeSpec(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+
+	_, _ = w.Write(h.spec)
+}
+
+func (h *Handler) ServeUI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+
+	_, _ = w.Write([]byte(swaggerUIHTML))
+}
+
+func (h *Handler) RedirectToUI(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "/swagger/", http.StatusMovedPermanently)
+}
+
+var swaggerUIHTML = []byte(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Task Service Swagger</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+  <style>
+    body { margin: 0; background: #f6f7fb; }
+    #swagger-ui { max-width: 1440px; margin: 0 auto; }
+  </style>
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js" crossorigin></script>
+  <script>
+    window.onload = function() {
+      window.ui = SwaggerUIBundle({
+        url: '/swagger/openapi.json',
+        dom_id: '#swagger-ui',
+        deepLinking: true,
+        presets: [SwaggerUIBundle.presets.apis],
+        layout: 'BaseLayout'
+      });
+    };
+  </script>
+</body>
+</html>`)
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\docs\openapi.json
+Размер: 12,944 байт
+────────────────────────────────────────────────────────────────────────────────
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Task Service API",
+    "version": "1.0.0",
+    "description": "CRUD API for tasks and recurring task series (periodicity). Generated tasks include series_id and occurrence_on."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8080"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Tasks",
+      "description": "Operations with tasks"
+    },
+    {
+      "name": "Task series",
+      "description": "Recurring task rules (periodicity); the scheduler creates task rows linked via series_id"
+    }
+  ],
+  "paths": {
+    "/api/v1/tasks": {
+      "get": {
+        "tags": ["Tasks"],
+        "summary": "List tasks",
+        "responses": {
+          "200": {
+            "description": "Task list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/Task" }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["Tasks"],
+        "summary": "Create task",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateTaskRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created task",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Task" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/api/v1/tasks/{id}": {
+      "get": {
+        "tags": ["Tasks"],
+        "summary": "Get task by ID",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Task",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Task" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "put": {
+        "tags": ["Tasks"],
+        "summary": "Update task",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/UpdateTaskRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated task",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Task" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["Tasks"],
+        "summary": "Delete task",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "responses": {
+          "204": { "description": "Deleted" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/v1/task-series": {
+      "get": {
+        "tags": ["Task series"],
+        "summary": "List task series",
+        "responses": {
+          "200": {
+            "description": "Task series list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/TaskSeries" }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["Task series"],
+        "summary": "Create task series (periodicity rule)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateTaskSeriesRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created task series",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TaskSeries" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/api/v1/task-series/{id}": {
+      "get": {
+        "tags": ["Task series"],
+        "summary": "Get task series by ID",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Task series",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TaskSeries" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "put": {
+        "tags": ["Task series"],
+        "summary": "Update task series",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/UpdateTaskSeriesRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated task series",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TaskSeries" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["Task series"],
+        "summary": "Delete task series",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "responses": {
+          "204": { "description": "Deleted" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    }
+  },
+  "components": {
+    "responses": {
+      "BadRequest": {
+        "description": "Bad request",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Resource not found",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "CreateTaskRequest": {
+        "type": "object",
+        "required": ["title"],
+        "properties": {
+          "title": {
+            "type": "string",
+            "example": "Prepare release"
+          },
+          "description": {
+            "type": "string",
+            "example": "Collect release notes and check migrations"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["new", "in_progress", "done"],
+            "example": "new"
+          }
+        }
+      },
+      "UpdateTaskRequest": {
+        "type": "object",
+        "required": ["title", "status"],
+        "properties": {
+          "title": {
+            "type": "string",
+            "example": "Prepare release"
+          },
+          "description": {
+            "type": "string",
+            "example": "Collect release notes and check migrations"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["new", "in_progress", "done"],
+            "example": "in_progress"
+          }
+        }
+      },
+      "Task": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "format": "int64", "example": 1 },
+          "title": { "type": "string", "example": "Prepare release" },
+          "description": {
+            "type": "string",
+            "example": "Collect release notes and check migrations"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["new", "in_progress", "done"],
+            "example": "new"
+          },
+          "series_id": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "description": "Set when the task was generated from a task series",
+            "example": 2
+          },
+          "occurrence_on": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Calendar day of this occurrence (date part; time from JSON encoding)",
+            "example": "2026-04-12T00:00:00Z"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-03-24T00:00:00Z"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-03-24T00:00:00Z"
+          }
+        }
+      },
+      "RecurrenceType": {
+        "type": "string",
+        "description": "Periodicity kind",
+        "enum": ["every_n_days", "monthly_day", "specific_dates", "even_odd"]
+      },
+      "TaskSeriesParams": {
+        "type": "object",
+        "description": "JSON object; fields depend on recurrence_type (e.g. interval_days, anchor_date, day_of_month, dates, parity, timezone, schedule_time)",
+        "additionalProperties": true,
+        "example": {
+          "interval_days": 1,
+          "anchor_date": "2026-04-01",
+          "timezone": "Europe/Moscow",
+          "schedule_time": "09:00"
+        }
+      },
+      "CreateTaskSeriesRequest": {
+        "type": "object",
+        "required": ["title", "recurrence_type"],
+        "properties": {
+          "title": { "type": "string", "example": "Daily calls" },
+          "description": { "type": "string", "example": "" },
+          "recurrence_type": { "$ref": "#/components/schemas/RecurrenceType" },
+          "params": { "$ref": "#/components/schemas/TaskSeriesParams" },
+          "is_active": {
+            "type": "boolean",
+            "nullable": true,
+            "description": "Defaults to true if omitted"
+          }
+        }
+      },
+      "UpdateTaskSeriesRequest": {
+        "type": "object",
+        "required": ["title", "recurrence_type"],
+        "properties": {
+          "title": { "type": "string", "example": "Daily calls" },
+          "description": { "type": "string", "example": "" },
+          "recurrence_type": { "$ref": "#/components/schemas/RecurrenceType" },
+          "params": { "$ref": "#/components/schemas/TaskSeriesParams" },
+          "is_active": { "type": "boolean", "nullable": true }
+        }
+      },
+      "TaskSeries": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "format": "int64", "example": 1 },
+          "title": { "type": "string", "example": "Daily calls" },
+          "description": { "type": "string", "example": "" },
+          "recurrence_type": { "$ref": "#/components/schemas/RecurrenceType" },
+          "params": { "$ref": "#/components/schemas/TaskSeriesParams" },
+          "is_active": { "type": "boolean", "example": true },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-04-01T10:00:00Z"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-04-01T10:00:00Z"
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": { "type": "string", "example": "task not found" }
+        }
+      }
+    }
+  }
+}
+
+
+================================================================================
+📁 ПАПКА: Lunsee/internal\transport\http\handlers/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\handlers\dto.go
+Размер: 3,139 байт
+────────────────────────────────────────────────────────────────────────────────
+package handlers
+
+import (
+	"encoding/json"
+	"time"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+	taskseriesdomain "example.com/taskservice/internal/domain/taskseries"
+)
+
+type taskMutationDTO struct {
+	Title       string            `json:"title"`
+	Description string            `json:"description"`
+	Status      taskdomain.Status `json:"status"`
+}
+
+type taskDTO struct {
+	ID           int64             `json:"id"`
+	Title        string            `json:"title"`
+	Description  string            `json:"description"`
+	Status       taskdomain.Status `json:"status"`
+	SeriesID     *int64            `json:"series_id,omitempty"`
+	OccurrenceOn *time.Time        `json:"occurrence_on,omitempty"`
+	CreatedAt    time.Time         `json:"created_at"`
+	UpdatedAt    time.Time         `json:"updated_at"`
+}
+
+func newTaskDTO(task *taskdomain.Task) taskDTO {
+	return taskDTO{
+		ID:           task.ID,
+		Title:        task.Title,
+		Description:  task.Description,
+		Status:       task.Status,
+		SeriesID:     task.SeriesID,
+		OccurrenceOn: task.OccurrenceOn,
+		CreatedAt:    task.CreatedAt,
+		UpdatedAt:    task.UpdatedAt,
+	}
+}
+
+// Входные данные для серии задач.
+// входные данные: Title string, Description string, RecurrenceType taskseriesdomain.RecurrenceType, Params json.RawMessage, IsActive *bool
+// выходные данные: taskSeriesMutationDTO
+type taskSeriesMutationDTO struct {
+	Title          string                          `json:"title"`
+	Description    string                          `json:"description"`
+	RecurrenceType taskseriesdomain.RecurrenceType `json:"recurrence_type"`
+	Params         json.RawMessage                 `json:"params"`
+	IsActive       *bool                           `json:"is_active"`
+}
+
+// Выходные данные для серии задач.
+// входные данные: series *taskseriesdomain.TaskSeries
+// выходные данные: taskSeriesDTO
+type taskSeriesDTO struct {
+	ID             int64                           `json:"id"`
+	Title          string                          `json:"title"`
+	Description    string                          `json:"description"`
+	RecurrenceType taskseriesdomain.RecurrenceType `json:"recurrence_type"`
+	Params         json.RawMessage                 `json:"params"`
+	IsActive       bool                            `json:"is_active"`
+	CreatedAt      time.Time                       `json:"created_at"`
+	UpdatedAt      time.Time                       `json:"updated_at"`
+}
+
+// Создает новый taskSeriesDTO.
+// входные данные: series *taskseriesdomain.TaskSeries
+// выходные данные: taskSeriesDTO
+func newTaskSeriesDTO(series *taskseriesdomain.TaskSeries) taskSeriesDTO {
+	return taskSeriesDTO{
+		ID:             series.ID,
+		Title:          series.Title,
+		Description:    series.Description,
+		RecurrenceType: series.RecurrenceType,
+		Params:         series.Params,
+		IsActive:       series.IsActive,
+		CreatedAt:      series.CreatedAt,
+		UpdatedAt:      series.UpdatedAt,
+	}
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\handlers\task_handler.go
+Размер: 3,773 байт
+────────────────────────────────────────────────────────────────────────────────
+package handlers
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strconv"
+
+	"github.com/gorilla/mux"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+	taskusecase "example.com/taskservice/internal/usecase/task"
+)
+
+type TaskHandler struct {
+	usecase taskusecase.Usecase
+}
+
+func NewTaskHandler(usecase taskusecase.Usecase) *TaskHandler {
+	return &TaskHandler{usecase: usecase}
+}
+
+func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
+	var req taskMutationDTO
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	created, err := h.usecase.Create(r.Context(), taskusecase.CreateInput{
+		Title:       req.Title,
+		Description: req.Description,
+		Status:      req.Status,
+	})
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, newTaskDTO(created))
+}
+
+func (h *TaskHandler) GetByID(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	task, err := h.usecase.GetByID(r.Context(), id)
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, newTaskDTO(task))
+}
+
+func (h *TaskHandler) Update(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	var req taskMutationDTO
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	updated, err := h.usecase.Update(r.Context(), id, taskusecase.UpdateInput{
+		Title:       req.Title,
+		Description: req.Description,
+		Status:      req.Status,
+	})
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, newTaskDTO(updated))
+}
+
+func (h *TaskHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	if err := h.usecase.Delete(r.Context(), id); err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
+	tasks, err := h.usecase.List(r.Context())
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	response := make([]taskDTO, 0, len(tasks))
+	for i := range tasks {
+		response = append(response, newTaskDTO(&tasks[i]))
+	}
+
+	writeJSON(w, http.StatusOK, response)
+}
+
+func getIDFromRequest(r *http.Request) (int64, error) {
+	rawID := mux.Vars(r)["id"]
+	if rawID == "" {
+		return 0, errors.New("missing task id")
+	}
+
+	id, err := strconv.ParseInt(rawID, 10, 64)
+	if err != nil {
+		return 0, errors.New("invalid task id")
+	}
+
+	if id <= 0 {
+		return 0, errors.New("invalid task id")
+	}
+
+	return id, nil
+}
+
+func decodeJSON(r *http.Request, dst any) error {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+
+	if err := decoder.Decode(dst); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func writeUsecaseError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, taskdomain.ErrNotFound):
+		writeError(w, http.StatusNotFound, err)
+	case errors.Is(err, taskusecase.ErrInvalidInput):
+		writeError(w, http.StatusBadRequest, err)
+	default:
+		writeError(w, http.StatusInternalServerError, err)
+	}
+}
+
+func writeError(w http.ResponseWriter, status int, err error) {
+	writeJSON(w, status, map[string]string{
+		"error": err.Error(),
+	})
+}
+
+func writeJSON(w http.ResponseWriter, status int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\handlers\task_series_handler.go
+Размер: 3,351 байт
+────────────────────────────────────────────────────────────────────────────────
+package handlers
+
+import (
+	"errors"
+	"net/http"
+
+	taskseriesdomain "example.com/taskservice/internal/domain/taskseries"
+	taskseriesusecase "example.com/taskservice/internal/usecase/taskseries"
+)
+
+type TaskSeriesHandler struct {
+	usecase taskseriesusecase.Usecase
+}
+
+func NewTaskSeriesHandler(usecase taskseriesusecase.Usecase) *TaskSeriesHandler {
+	return &TaskSeriesHandler{usecase: usecase}
+}
+
+func (h *TaskSeriesHandler) Create(w http.ResponseWriter, r *http.Request) {
+	var req taskSeriesMutationDTO
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	isActive := true
+	if req.IsActive != nil {
+		isActive = *req.IsActive
+	}
+
+	created, err := h.usecase.Create(r.Context(), taskseriesusecase.CreateInput{
+		Title:          req.Title,
+		Description:    req.Description,
+		RecurrenceType: req.RecurrenceType,
+		Params:         req.Params,
+		IsActive:       isActive,
+	})
+	if err != nil {
+		writeTaskSeriesUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, newTaskSeriesDTO(created))
+}
+
+func (h *TaskSeriesHandler) GetByID(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	series, err := h.usecase.GetByID(r.Context(), id)
+	if err != nil {
+		writeTaskSeriesUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, newTaskSeriesDTO(series))
+}
+
+func (h *TaskSeriesHandler) Update(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	var req taskSeriesMutationDTO
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	isActive := true
+	if req.IsActive != nil {
+		isActive = *req.IsActive
+	}
+
+	updated, err := h.usecase.Update(r.Context(), id, taskseriesusecase.UpdateInput{
+		Title:          req.Title,
+		Description:    req.Description,
+		RecurrenceType: req.RecurrenceType,
+		Params:         req.Params,
+		IsActive:       isActive,
+	})
+	if err != nil {
+		writeTaskSeriesUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, newTaskSeriesDTO(updated))
+}
+
+func (h *TaskSeriesHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	if err := h.usecase.Delete(r.Context(), id); err != nil {
+		writeTaskSeriesUsecaseError(w, err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *TaskSeriesHandler) List(w http.ResponseWriter, r *http.Request) {
+	list, err := h.usecase.List(r.Context())
+	if err != nil {
+		writeTaskSeriesUsecaseError(w, err)
+		return
+	}
+
+	response := make([]taskSeriesDTO, 0, len(list))
+	for i := range list {
+		response = append(response, newTaskSeriesDTO(&list[i]))
+	}
+
+	writeJSON(w, http.StatusOK, response)
+}
+
+func writeTaskSeriesUsecaseError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, taskseriesdomain.ErrNotFound):
+		writeError(w, http.StatusNotFound, err)
+	case errors.Is(err, taskseriesusecase.ErrInvalidInput):
+		writeError(w, http.StatusBadRequest, err)
+	default:
+		writeError(w, http.StatusInternalServerError, err)
+	}
+}
+
+
+================================================================================
+📁 ПАПКА: Lunsee/internal\usecase/
+================================================================================
+
+================================================================================
+📁 ПАПКА: Lunsee/internal\usecase\task/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\task\errors.go
+Размер: 91 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import "errors"
+
+var ErrInvalidInput = errors.New("invalid task input")
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\task\ports.go
+Размер: 1,034 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import (
+	"context"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type Repository interface {
+	Create(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error)
+	GetByID(ctx context.Context, id int64) (*taskdomain.Task, error)
+	Update(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error)
+	Delete(ctx context.Context, id int64) error
+	List(ctx context.Context) ([]taskdomain.Task, error)
+}
+
+type Usecase interface {
+	Create(ctx context.Context, input CreateInput) (*taskdomain.Task, error)
+	GetByID(ctx context.Context, id int64) (*taskdomain.Task, error)
+	Update(ctx context.Context, id int64, input UpdateInput) (*taskdomain.Task, error)
+	Delete(ctx context.Context, id int64) error
+	List(ctx context.Context) ([]taskdomain.Task, error)
+}
+
+type CreateInput struct {
+	Title       string
+	Description string
+	Status      taskdomain.Status
+}
+
+type UpdateInput struct {
+	Title       string
+	Description string
+	Status      taskdomain.Status
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\task\service.go
+Размер: 2,861 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type Service struct {
+	repo Repository
+	now  func() time.Time
+}
+
+func NewService(repo Repository) *Service {
+	return &Service{
+		repo: repo,
+		now:  func() time.Time { return time.Now().UTC() },
+	}
+}
+
+func (s *Service) Create(ctx context.Context, input CreateInput) (*taskdomain.Task, error) {
+	normalized, err := validateCreateInput(input)
+	if err != nil {
+		return nil, err
+	}
+
+	model := &taskdomain.Task{
+		Title:       normalized.Title,
+		Description: normalized.Description,
+		Status:      normalized.Status,
+	}
+	now := s.now()
+	model.CreatedAt = now
+	model.UpdatedAt = now
+
+	created, err := s.repo.Create(ctx, model)
+	if err != nil {
+		return nil, err
+	}
+
+	return created, nil
+}
+
+func (s *Service) GetByID(ctx context.Context, id int64) (*taskdomain.Task, error) {
+	if id <= 0 {
+		return nil, fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+	}
+
+	return s.repo.GetByID(ctx, id)
+}
+
+func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (*taskdomain.Task, error) {
+	if id <= 0 {
+		return nil, fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+	}
+
+	normalized, err := validateUpdateInput(input)
+	if err != nil {
+		return nil, err
+	}
+
+	model := &taskdomain.Task{
+		ID:          id,
+		Title:       normalized.Title,
+		Description: normalized.Description,
+		Status:      normalized.Status,
+		UpdatedAt:   s.now(),
+	}
+
+	updated, err := s.repo.Update(ctx, model)
+	if err != nil {
+		return nil, err
+	}
+
+	return updated, nil
+}
+
+func (s *Service) Delete(ctx context.Context, id int64) error {
+	if id <= 0 {
+		return fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+	}
+
+	return s.repo.Delete(ctx, id)
+}
+
+func (s *Service) List(ctx context.Context) ([]taskdomain.Task, error) {
+	return s.repo.List(ctx)
+}
+
+func validateCreateInput(input CreateInput) (CreateInput, error) {
+	input.Title = strings.TrimSpace(input.Title)
+	input.Description = strings.TrimSpace(input.Description)
+
+	if input.Title == "" {
+		return CreateInput{}, fmt.Errorf("%w: title is required", ErrInvalidInput)
+	}
+
+	if input.Status == "" {
+		input.Status = taskdomain.StatusNew
+	}
+
+	if !input.Status.Valid() {
+		return CreateInput{}, fmt.Errorf("%w: invalid status", ErrInvalidInput)
+	}
+
+	return input, nil
+}
+
+func validateUpdateInput(input UpdateInput) (UpdateInput, error) {
+	input.Title = strings.TrimSpace(input.Title)
+	input.Description = strings.TrimSpace(input.Description)
+
+	if input.Title == "" {
+		return UpdateInput{}, fmt.Errorf("%w: title is required", ErrInvalidInput)
+	}
+
+	if !input.Status.Valid() {
+		return UpdateInput{}, fmt.Errorf("%w: invalid status", ErrInvalidInput)
+	}
+
+	return input, nil
+}
+
+
+================================================================================
+📁 ПАПКА: Lunsee/internal\usecase\taskgen/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\taskgen\service.go
+Размер: 2,528 байт
+────────────────────────────────────────────────────────────────────────────────
+package taskgen
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+	taskseriesdomain "example.com/taskservice/internal/domain/taskseries"
+	taskusecase "example.com/taskservice/internal/usecase/task"
+	taskseriesusecase "example.com/taskservice/internal/usecase/taskseries"
+)
+
+// Processor создаёт строки tasks по активным task_series на текущий календарный день и окно времени.
+type Processor struct {
+	tasks  taskusecase.Repository
+	series taskseriesusecase.Repository
+	tick   time.Duration
+	now    func() time.Time
+}
+
+func NewProcessor(
+	tasks taskusecase.Repository,
+	series taskseriesusecase.Repository,
+	tick time.Duration,
+) *Processor {
+	return &Processor{
+		tasks:  tasks,
+		series: series,
+		tick:   tick,
+		now:    func() time.Time { return time.Now().UTC() },
+	}
+}
+
+// ProcessTick вызывается из планировщика: для каждой активной серии проверяются дата по правилу
+// периодичности и время (schedule_time в params) в локальной зоне series.
+func (p *Processor) ProcessTick(ctx context.Context) error {
+	now := p.now()
+	all, err := p.series.List(ctx)
+	if err != nil {
+		return err
+	}
+
+	for i := range all {
+		s := &all[i]
+		if !s.IsActive {
+			continue
+		}
+
+		loc, err := taskseriesdomain.LoadLocation(s.Params)
+		if err != nil {
+			continue
+		}
+
+		local := now.In(loc)
+
+		okDate, err := taskseriesdomain.OccursOnCalendarDate(s.RecurrenceType, s.Params, local)
+		if err != nil || !okDate {
+			continue
+		}
+
+		okTime, err := taskseriesdomain.WithinScheduleWindow(local, s.Params, p.tick)
+		if err != nil || !okTime {
+			continue
+		}
+
+		y, m, d := local.Date()
+		// DATE в БД — календарные y-m-d без сдвига часового пояса.
+		occ := time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+
+		sid := s.ID
+		task := &taskdomain.Task{
+			Title:        s.Title,
+			Description:  s.Description,
+			Status:       taskdomain.StatusNew,
+			SeriesID:     &sid,
+			OccurrenceOn: &occ,
+			CreatedAt:    now,
+			UpdatedAt:    now,
+		}
+
+		_, err = p.tasks.Create(ctx, task)
+		if err != nil && !isUniqueViolation(err) {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func isUniqueViolation(err error) bool {
+	var pe *pgconn.PgError
+	return errors.As(err, &pe) && pe.Code == "23505"
+}
+
+
+================================================================================
+📁 ПАПКА: Lunsee/internal\usecase\taskseries/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\taskseries\errors.go
+Размер: 92 байт
+────────────────────────────────────────────────────────────────────────────────
+package taskseries
+
+import "errors"
+
+var ErrInvalidInput = errors.New("invalid input")
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\taskseries\ports.go
+Размер: 2,333 байт
+────────────────────────────────────────────────────────────────────────────────
+package taskseries
+
+import (
+	"context"
+
+	taskseriesdomain "example.com/taskservice/internal/domain/taskseries"
+)
+
+// Интерфейс для работы с репозиторием серий задач.
+// входные данные: ctx context.Context, series *taskseriesdomain.TaskSeries
+// выходные данные: *taskseriesdomain.TaskSeries, error
+type Repository interface {
+	Create(ctx context.Context, series *taskseriesdomain.TaskSeries) (*taskseriesdomain.TaskSeries, error)
+	GetByID(ctx context.Context, id int64) (*taskseriesdomain.TaskSeries, error)
+	Update(ctx context.Context, series *taskseriesdomain.TaskSeries) (*taskseriesdomain.TaskSeries, error)
+	Delete(ctx context.Context, id int64) error
+	List(ctx context.Context) ([]taskseriesdomain.TaskSeries, error)
+}
+
+// Интерфейс для работы с usecase серий задач.
+// входные данные: ctx context.Context, input CreateInput
+// выходные данные: *taskseriesdomain.TaskSeries, error
+type Usecase interface {
+	Create(ctx context.Context, input CreateInput) (*taskseriesdomain.TaskSeries, error)
+	GetByID(ctx context.Context, id int64) (*taskseriesdomain.TaskSeries, error)
+	Update(ctx context.Context, id int64, input UpdateInput) (*taskseriesdomain.TaskSeries, error)
+	Delete(ctx context.Context, id int64) error
+	List(ctx context.Context) ([]taskseriesdomain.TaskSeries, error)
+}
+
+// Входные данные для создания серии задач.
+// входные данные: Title string, Description string, RecurrenceType taskseriesdomain.RecurrenceType, Params []byte, IsActive bool
+// выходные данные: CreateInput
+type CreateInput struct {
+	Title          string
+	Description    string
+	RecurrenceType taskseriesdomain.RecurrenceType
+	Params         []byte
+	IsActive       bool
+}
+
+// Входные данные для обновления серии задач.
+// входные данные: Title string, Description string, RecurrenceType taskseriesdomain.RecurrenceType, Params []byte, IsActive bool
+// выходные данные: UpdateInput
+type UpdateInput struct {
+	Title          string
+	Description    string
+	RecurrenceType taskseriesdomain.RecurrenceType
+	Params         []byte
+	IsActive       bool
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\taskseries\service.go
+Размер: 5,166 байт
+────────────────────────────────────────────────────────────────────────────────
+package taskseries
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+
+	taskseriesdomain "example.com/taskservice/internal/domain/taskseries"
+)
+
+type Service struct {
+	repo Repository
+	now  func() time.Time
+}
+
+func NewService(repo Repository) *Service {
+	return &Service{
+		repo: repo,
+		now:  func() time.Time { return time.Now().UTC() },
+	}
+}
+
+// Создает новую серию задач.
+// входные данные: ctx context.Context, input CreateInput
+// выходные данные: *taskseriesdomain.TaskSeries, error
+func (s *Service) Create(ctx context.Context, input CreateInput) (*taskseriesdomain.TaskSeries, error) {
+	normalized, err := validateCreateInput(input)
+	if err != nil {
+		return nil, err
+	}
+
+	model := &taskseriesdomain.TaskSeries{
+		Title:          normalized.Title,
+		Description:    normalized.Description,
+		RecurrenceType: normalized.RecurrenceType,
+		Params:         json.RawMessage(normalized.Params),
+		IsActive:       normalized.IsActive,
+	}
+	now := s.now()
+	model.CreatedAt = now
+	model.UpdatedAt = now
+
+	return s.repo.Create(ctx, model)
+}
+
+// Получает серию задач по ID.
+// входные данные: ctx context.Context, id int64
+// выходные данные: *taskseriesdomain.TaskSeries, error
+func (s *Service) GetByID(ctx context.Context, id int64) (*taskseriesdomain.TaskSeries, error) {
+	if id <= 0 {
+		return nil, fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+	}
+
+	return s.repo.GetByID(ctx, id)
+}
+
+// Обновляет серию задач.
+// входные данные: ctx context.Context, id int64, input UpdateInput
+// выходные данные: *taskseriesdomain.TaskSeries, error
+func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (*taskseriesdomain.TaskSeries, error) {
+	if id <= 0 {
+		return nil, fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+	}
+
+	normalized, err := validateUpdateInput(input)
+	if err != nil {
+		return nil, err
+	}
+
+	model := &taskseriesdomain.TaskSeries{
+		ID:             id,
+		Title:          normalized.Title,
+		Description:    normalized.Description,
+		RecurrenceType: normalized.RecurrenceType,
+		Params:         json.RawMessage(normalized.Params),
+		IsActive:       normalized.IsActive,
+		UpdatedAt:      s.now(),
+	}
+
+	return s.repo.Update(ctx, model)
+}
+
+// Удаляет серию задач.
+// входные данные: ctx context.Context, id int64
+// выходные данные: error
+func (s *Service) Delete(ctx context.Context, id int64) error {
+	if id <= 0 {
+		return fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+	}
+
+	return s.repo.Delete(ctx, id)
+}
+
+// Получает список всех серий задач.
+// входные данные: ctx context.Context
+// выходные данные: []taskseriesdomain.TaskSeries, error
+func (s *Service) List(ctx context.Context) ([]taskseriesdomain.TaskSeries, error) {
+	return s.repo.List(ctx)
+}
+
+// Проверяет входные данные для создания серии задач.
+// входные данные: input CreateInput
+// выходные данные: CreateInput, error
+func validateCreateInput(input CreateInput) (CreateInput, error) {
+	input.Title = strings.TrimSpace(input.Title)
+	input.Description = strings.TrimSpace(input.Description)
+	input.RecurrenceType = taskseriesdomain.RecurrenceType(strings.TrimSpace(string(input.RecurrenceType)))
+
+	if input.Title == "" {
+		return CreateInput{}, fmt.Errorf("%w: title is required", ErrInvalidInput)
+	}
+
+	if input.RecurrenceType == "" {
+		return CreateInput{}, fmt.Errorf("%w: recurrence_type is required", ErrInvalidInput)
+	}
+
+	if !input.RecurrenceType.Valid() {
+		return CreateInput{}, fmt.Errorf("%w: invalid recurrence_type", ErrInvalidInput)
+	}
+
+	input.Params = normalizeParams(input.Params)
+
+	return input, nil
+}
+
+// Проверяет входные данные для обновления серии задач.
+// входные данные: input UpdateInput
+// выходные данные: UpdateInput, error
+func validateUpdateInput(input UpdateInput) (UpdateInput, error) {
+	input.Title = strings.TrimSpace(input.Title)
+	input.Description = strings.TrimSpace(input.Description)
+	input.RecurrenceType = taskseriesdomain.RecurrenceType(strings.TrimSpace(string(input.RecurrenceType)))
+
+	if input.Title == "" {
+		return UpdateInput{}, fmt.Errorf("%w: title is required", ErrInvalidInput)
+	}
+
+	if input.RecurrenceType == "" {
+		return UpdateInput{}, fmt.Errorf("%w: recurrence_type is required", ErrInvalidInput)
+	}
+
+	if !input.RecurrenceType.Valid() {
+		return UpdateInput{}, fmt.Errorf("%w: invalid recurrence_type", ErrInvalidInput)
+	}
+
+	input.Params = normalizeParams(input.Params)
+
+	return input, nil
+}
+
+// Нормализует параметры серии задач.
+// входные данные: p []byte
+// выходные данные: []byte
+func normalizeParams(p []byte) []byte {
+	if len(p) == 0 {
+		return []byte("{}")
+	}
+
+	return p
+}
+
+
+================================================================================
+📁 ПАПКА: Lunsee/migrations/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: migrations\0001_create_tasks.up.sql
+Размер: 318 байт
+────────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS tasks (
+	id BIGSERIAL PRIMARY KEY,
+	title TEXT NOT NULL,
+	description TEXT NOT NULL DEFAULT '',
+	status TEXT NOT NULL,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks (status);
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: migrations\0002_create_task_series.up.sql
+Размер: 1,001 байт
+────────────────────────────────────────────────────────────────────────────────
+--правило периодичности (серия). Детали полей и recurrence_type можно сменить после согласования.
+CREATE TABLE IF NOT EXISTS task_series (
+	id BIGSERIAL PRIMARY KEY,
+	title TEXT NOT NULL,
+	description TEXT NOT NULL DEFAULT '',
+	-- Тип периодичности: daily_every_n | monthly_day | specific_dates | even_odd (уточним в коде/README)
+	recurrence_type TEXT NOT NULL, 
+	-- Параметры типа (n, день месяца, список дат, чёт/нечёт и т.д.) — гибко, пока согласуем схему JSON
+	params JSONB NOT NULL DEFAULT '{}'::jsonb,
+	is_active BOOLEAN NOT NULL DEFAULT TRUE,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_series_recurrence_type ON task_series (recurrence_type);
+CREATE INDEX IF NOT EXISTS idx_task_series_is_active ON task_series (is_active);
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: migrations\0003_alter_tasks_add_series.up.sql
+Размер: 663 байт
+────────────────────────────────────────────────────────────────────────────────
+-- связь задачи с серией и календарный день вхождения (для сгенерированных задач).
+ALTER TABLE tasks
+	ADD COLUMN IF NOT EXISTS series_id BIGINT REFERENCES task_series (id) ON DELETE SET NULL,
+	ADD COLUMN IF NOT EXISTS occurrence_on DATE;
+
+CREATE INDEX IF NOT EXISTS idx_tasks_series_id ON tasks (series_id);
+
+-- Одно вхождение серии на конкретную дату (когда оба поля заданы)
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tasks_series_occurrence
+	ON tasks (series_id, occurrence_on)
+	WHERE series_id IS NOT NULL AND occurrence_on IS NOT NULL;
+
+
+================================================================================
+СТАТИСТИКА ЭКСПОРТА
+================================================================================
+Всего обработано файлов: 32
+Всего пропущено файлов: 2
+Общий размер выходного файла: 90,231 байт

@@ -1,0 +1,3122 @@
+================================================================================
+ЭКСПОРТ РЕПОЗИТОРИЯ: alneremin
+Путь: C:\Users\vladk\Desktop\test\forks\alneremin
+Дата экспорта: 2026-04-14 01:14:55
+================================================================================
+
+
+================================================================================
+📁 ПАПКА: alneremin/
+================================================================================
+
+[ПРОПУЩЕН] .dockerignore (бинарный/служебный/слишком большой)
+
+[ПРОПУЩЕН] .gitignore (бинарный/служебный/слишком большой)
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: Dockerfile
+Размер: 414 байт
+────────────────────────────────────────────────────────────────────────────────
+FROM golang:1.23.0-alpine AS builder
+
+WORKDIR /src
+
+RUN apk add --no-cache ca-certificates
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/taskservice ./cmd/api
+
+FROM alpine:3.21
+
+WORKDIR /app
+
+RUN apk add --no-cache ca-certificates
+
+COPY --from=builder /out/taskservice /app/taskservice
+
+EXPOSE 8080
+
+CMD ["/app/taskservice"]
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: Dockerfile.test
+Размер: 99 байт
+────────────────────────────────────────────────────────────────────────────────
+FROM golang:1.23-alpine
+
+WORKDIR /app
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: README.md
+Размер: 4,405 байт
+────────────────────────────────────────────────────────────────────────────────
+# Task Service
+
+Сервис для управления задачами с HTTP API на Go.
+
+
+# Настройка периодичности задач
+
+Периодичность задач реализована с учетом сценариев по типам задач. ТЗ по этой задаче доработано таким образом, что
+- если задача ставится на часы, которые еще не прошли, обновление задачи выполняется тем же днем
+- для каждого типа периодичности указывается время в формате часы:минуты, когда задача должна быть обновлена. Таким образом, вроме периодичности нужно указывать час и минуту, когда будет выполнено обновление задачи
+
+Доработано ТЗ в части ввода ограничений на вход:
+- для ежедневных задач реализованы интервалы, от 1 (этот или следующий день) до 365 (через год)
+- для ежемесячных задач указывается число месяца (от 1 до 31, в начальном ТЗ не учтено 31 число). Если в месяце меньше 30 или 31 числа, указанных в запросе, будет выбрано последнее число месяца
+- задачи на конкретные даты ставятся в формате YYYY-MM-DD
+
+Доработано ТЗ в части планирования обновления задачи. В текущей редакции работает отдельный планировщик, который каждую минуту проверяет наличие задач для обновления статуса. Для каждой такой задачи запускается отдельный обработчик, максимальное количество обработчиков для одной итерации ограничено и равно 5.
+
+Предполагается, что обновление задачи - это изменение ее статуса на "new". В настоящей редакции нет учета того, что задача полностью закрыта, и не требуется изменение ее статуса, если настроена периодичность.
+
+Для полного тестирования функционала необходимо добавить тесты БД, интеграционные тесты, включающие
+- тесты всех SQL запросов
+- тесты отката миграций (в текущей версии пока нет down-миграций)
+- тесты работы планировщика в штатном режиме, в случае сбоев в работе планирования задач на день, неделю и тд. 
+- тесты API
+
+## Требования
+
+- Go `1.23+`
+- Docker и Docker Compose
+
+## Быстрый запуск через Docker Compose
+
+```bash
+docker compose up --build
+```
+
+После запуска сервис будет доступен по адресу `http://localhost:8080`.
+
+Если `postgres` уже запускался ранее со старой схемой, пересоздай volume:
+
+```bash
+docker compose down -v
+docker compose up --build
+```
+
+Причина в том, что SQL-файл из `migrations/0001_create_tasks.up.sql` монтируется в `docker-entrypoint-initdb.d` и применяется только при инициализации пустого data volume.
+
+## Swagger
+
+Swagger UI:
+
+```text
+http://localhost:8080/swagger/
+```
+
+OpenAPI JSON:
+
+```text
+http://localhost:8080/swagger/openapi.json
+```
+
+## API
+
+Базовый префикс API:
+
+```text
+/api/v1
+```
+
+Основные маршруты:
+
+- `POST /api/v1/tasks`
+- `GET /api/v1/tasks`
+- `GET /api/v1/tasks/{id}`
+- `PUT /api/v1/tasks/{id}`
+- `DELETE /api/v1/tasks/{id}`
+
+## Запуск тестов
+
+```bash
+docker compose --profile test run --rm test go test ./...
+```
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: docker-compose.yml
+Размер: 1,859 байт
+────────────────────────────────────────────────────────────────────────────────
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: taskservice
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d taskservice"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations/0001_create_tasks.up.sql:/docker-entrypoint-initdb.d/001_create_tasks.sql:ro
+      - ./migrations/0002_add_frequency_to_tasks.up.sql:/docker-entrypoint-initdb.d/002_add_frequency.sql:ro
+  pgadmin:
+    image: dpage/pgadmin4
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
+      PGADMIN_DEFAULT_PASSWORD: adminpassword
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      HTTP_ADDR: :8080
+      DATABASE_DSN: postgres://postgres:postgres@postgres:5432/taskservice?sslmode=disable
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    volumes:
+      - .:/app  # Maps local project folder to /app in container
+    environment:
+      # DATABASE_DSN: postgres://postgres:postgres@postgres:5432/taskservice?sslmode=disable
+      # Детализация вывода
+      # GODEBUG: "gctrace=1"  # Выводит информацию о GC
+      GOTRACEBACK: "all"    # Подробный stack trace при панике
+      # CGO_ENABLED: 1
+      
+      # Test flags
+      TEST_FLAGS: "-v -cover -race -count=1 -failfast"
+
+    # depends_on:
+    #   postgres:
+    #     condition: service_healthy
+    profiles:
+      - test
+
+volumes:
+  postgres_data:
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: go.mod
+Размер: 441 байт
+────────────────────────────────────────────────────────────────────────────────
+module example.com/taskservice
+
+go 1.23.0
+
+require (
+	github.com/gorilla/mux v1.8.1
+	github.com/jackc/pgx/v5 v5.7.6
+)
+
+require (
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
+	golang.org/x/crypto v0.37.0 // indirect
+	golang.org/x/sync v0.13.0 // indirect
+	golang.org/x/text v0.24.0 // indirect
+)
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: go.sum
+Размер: 2,649 байт
+────────────────────────────────────────────────────────────────────────────────
+github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
+github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/gorilla/mux v1.8.1 h1:TuBL49tXwgrFYWhqrNgrUNEY92u81SPhu7sTdzQEiWY=
+github.com/gorilla/mux v1.8.1/go.mod h1:AKf9I4AEqPTmMytcMc0KkNouC66V3BtZ4qD5fmWSiMQ=
+github.com/jackc/pgpassfile v1.0.0 h1:/6Hmqy13Ss2zCq62VdNG8tM1wchn8zjSGOBJ6icpsIM=
+github.com/jackc/pgpassfile v1.0.0/go.mod h1:CEx0iS5ambNFdcRtxPj5JhEz+xB6uRky5eyVu/W2HEg=
+github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 h1:iCEnooe7UlwOQYpKFhBabPMi4aNAfoODPEFNiAnClxo=
+github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761/go.mod h1:5TJZWKEWniPve33vlWYSoGYefn3gLQRzjfDlhSJ9ZKM=
+github.com/jackc/pgx/v5 v5.7.6 h1:rWQc5FwZSPX58r1OQmkuaNicxdmExaEz5A2DO2hUuTk=
+github.com/jackc/pgx/v5 v5.7.6/go.mod h1:aruU7o91Tc2q2cFp5h4uP3f6ztExVpyVv88Xl/8Vl8M=
+github.com/jackc/puddle/v2 v2.2.2 h1:PR8nw+E/1w0GLuRFSmiioY6UooMp6KJv0/61nB7icHo=
+github.com/jackc/puddle/v2 v2.2.2/go.mod h1:vriiEXHvEE654aYKXXjOvZM39qJ0q+azkZFrfEOc3H4=
+github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
+github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
+github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
+github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UVUgZn+9EI=
+github.com/stretchr/testify v1.7.0/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
+github.com/stretchr/testify v1.8.1 h1:w7B6lhMri9wdJUVmEZPGGhZzrYTPvgJArz7wNPgYKsk=
+github.com/stretchr/testify v1.8.1/go.mod h1:w2LPCIKwWwSfY2zedu0+kehJoqGctiVI29o6fzry7u4=
+golang.org/x/crypto v0.37.0 h1:kJNSjF/Xp7kU0iB2Z+9viTPMW4EqqsrywMXLJOOsXSE=
+golang.org/x/crypto v0.37.0/go.mod h1:vg+k43peMZ0pUMhYmVAWysMK35e6ioLh3wB8ZCAfbVc=
+golang.org/x/sync v0.13.0 h1:AauUjRAJ9OSnvULf/ARrrVywoJDy0YS2AwQ98I37610=
+golang.org/x/sync v0.13.0/go.mod h1:1dzgHSNfp02xaA81J2MS99Qcpr2w7fw1gpm99rleRqA=
+golang.org/x/text v0.24.0 h1:dd5Bzh4yt5KYA8f9CJHCP4FB4D51c2c6JvN37xJJkJ0=
+golang.org/x/text v0.24.0/go.mod h1:L8rBsPeo2pSS+xqN0d5u2ikmjtmoJbDBT1b7nHvFCdU=
+gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
+gopkg.in/yaml.v3 v3.0.0-20200313102051-9f266ea9e77c/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
+gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: test.sh
+Размер: 666 байт
+────────────────────────────────────────────────────────────────────────────────
+docker compose --profile test run --rm test sh -c "
+    echo '=== GO ENVIRONMENT ===' && \
+    go env | grep -E 'VERSION|MODULE|PROXY|CACHE' && \
+    echo '' && \
+    echo '=== TEST PACKAGES ===' && \
+    go list -m && \
+    go list ./... | head -10 && \
+    echo '' && \
+    echo '=== STARTING TESTS ===' && \
+    echo 'Command: go test -v -cover -race -count=1 -timeout=30s -failfast ./...' && \
+    echo '' && \
+    go test -v -cover -race -count=1 -timeout=30s -failfast -json ./... 2>&1 | tee /tmp/test-output.json && \
+    echo '' && \
+    echo '=== TEST SUMMARY ===' && \
+    go test -v -cover ./... 2>&1 | tail -30
+" 2>&1 | tee test-output.log
+
+================================================================================
+📁 ПАПКА: alneremin/cmd/
+================================================================================
+
+================================================================================
+📁 ПАПКА: alneremin/cmd\api/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: cmd\api\main.go
+Размер: 2,832 байт
+────────────────────────────────────────────────────────────────────────────────
+package main
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	infrastructurepostgres "example.com/taskservice/internal/infrastructure/postgres"
+	postgresrepo "example.com/taskservice/internal/repository/postgres"
+	transporthttp "example.com/taskservice/internal/transport/http"
+	swaggerdocs "example.com/taskservice/internal/transport/http/docs"
+	httphandlers "example.com/taskservice/internal/transport/http/handlers"
+	scheduler "example.com/taskservice/internal/infrastructure/scheduler"
+	"example.com/taskservice/internal/usecase/task"
+)
+
+func main() {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
+
+	cfg := loadConfig()
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	pool, err := infrastructurepostgres.Open(ctx, cfg.DatabaseDSN)
+	if err != nil {
+		logger.Error("open postgres", "error", err)
+		os.Exit(1)
+	}
+	defer pool.Close()
+
+	taskRepo := postgresrepo.New(pool)
+
+    schedulerConfig := scheduler.Config{
+        CheckInterval: 1 * time.Minute,
+        WorkerCount:   5,
+    }
+
+    taskScheduler := scheduler.NewTaskScheduler(taskRepo, schedulerConfig)
+	calculator := scheduler.NewNextRunCalculator()
+	taskUsecase := task.NewService(taskRepo, taskScheduler, calculator)
+	taskHandler := httphandlers.NewTaskHandler(taskUsecase)
+	docsHandler := swaggerdocs.NewHandler()
+	router := transporthttp.NewRouter(taskHandler, docsHandler)
+
+	server := &http.Server{
+		Addr:              cfg.HTTPAddr,
+		Handler:           router,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	go func() {
+		<-ctx.Done()
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			logger.Error("shutdown http server", "error", err)
+		}
+		taskScheduler.Stop()
+	}()
+
+	if err := taskScheduler.Start(ctx); err != nil {
+		logger.Error("failed to start scheduler:", "err", err)
+	}
+
+	logger.Info("http server started", "addr", cfg.HTTPAddr)
+
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		logger.Error("listen and serve", "error", err)
+		os.Exit(1)
+	}
+}
+
+type config struct {
+	HTTPAddr    string
+	DatabaseDSN string
+}
+
+func loadConfig() config {
+	cfg := config{
+		HTTPAddr:    envOrDefault("HTTP_ADDR", ":8080"),
+		DatabaseDSN: envOrDefault("DATABASE_DSN", "postgres://postgres:postgres@localhost:5432/taskservice?sslmode=disable"),
+	}
+
+	if cfg.DatabaseDSN == "" {
+		panic(fmt.Errorf("DATABASE_DSN is required"))
+	}
+
+	return cfg
+}
+
+func envOrDefault(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+
+	return fallback
+}
+
+
+================================================================================
+📁 ПАПКА: alneremin/internal/
+================================================================================
+
+================================================================================
+📁 ПАПКА: alneremin/internal\domain/
+================================================================================
+
+================================================================================
+📁 ПАПКА: alneremin/internal\domain\task/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\domain\task\errors.go
+Размер: 1,568 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import (
+	"errors"
+	"fmt"
+)
+
+var (
+
+	ErrInvalidInput = errors.New("invalid task input")
+	ErrNotFound = errors.New("task not found")
+	ErrDailyConfigIsRequired = errors.New("daily config is required")
+	ErrInvalidDailyInterval = errors.New("daily interval must be between 1 and 365")
+	ErrMonthlyConfigIsRequired = errors.New("monthly config is required")
+	ErrInvalidMonthlyInterval = errors.New("day of month must be between 1 and 30")
+	ErrSpecificDatesIsRequired = errors.New("specific dates config is required")
+	ErrAtLeastOneDateIsRequired = errors.New("at least one specific date is required")
+	ErrInvalidDate = errors.New("invalid date format")
+	ErrInvalidHour = errors.New("invalid hour format")
+	ErrInvalidMinute = errors.New("invalid minute format")
+)
+
+type InvalidDateError struct {
+    Format 	string
+	Date   	string
+    Err    	error
+}
+
+func (e *InvalidDateError) Error() string {
+    return fmt.Sprintf("%v: %s, required: %s", e.Err, e.Date, e.Format)
+}
+
+func (e *InvalidDateError) Unwrap() error {
+    return e.Err
+}
+
+var (
+	ErrParityConfigIsRequired = errors.New("parity config is required")
+	ErrInvalidParityType = errors.New("parity type must be 'even' or 'odd'")
+	ErrUnknownFrequencyType = errors.New("unknown frequency type")
+)
+
+type UnknownFrequencyTypeError struct {
+    Type 	string
+    Err    	error
+}
+
+func (e *UnknownFrequencyTypeError) Error() string {
+    return fmt.Sprintf("%v: '%s'", e.Err, e.Type)
+}
+
+func (e *UnknownFrequencyTypeError) Unwrap() error {
+    return e.Err
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\domain\task\frequency.go
+Размер: 4,693 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import (
+    "time"
+    "reflect"
+)
+
+type FrequencyType string
+
+const (
+    Daily           FrequencyType = "daily"
+    Monthly         FrequencyType = "monthly"
+    SpecificDates   FrequencyType = "specific_dates"
+    Parity          FrequencyType = "parity"
+)
+
+type ParityType string
+
+const (
+    Even ParityType = "even"
+    Odd  ParityType = "odd"
+)
+
+type DailyFrequency struct { // TODO: учесть высокосный год
+    Interval int `json:"interval" validate:"min=1,max=365"` // каждый N-й день
+    Hour   int `json:"hour" validate:"min=0,max=23"`
+    Minute int `json:"minute" validate:"min=0,max=59"`
+}
+
+type MonthlyFrequency struct {
+    DayOfMonth int `json:"day_of_month" validate:"min=1,max=31"` // число месяца
+    Hour       int `json:"hour" validate:"min=0,max=23"`
+    Minute     int `json:"minute" validate:"min=0,max=59"`
+}
+
+type SpecificDatesFrequency struct {
+    Dates []string          `json:"dates" validate:"required,min=1"` // даты в формате YYYY-MM-DD
+    Hour       int          `json:"hour" validate:"min=0,max=23"`
+    Minute     int          `json:"minute" validate:"min=0,max=59"`
+}
+
+type ParityFrequency struct {
+    Type       ParityType   `json:"type" validate:"oneof=even odd"`
+    Hour       int          `json:"hour" validate:"min=0,max=23"`
+    Minute     int          `json:"minute" validate:"min=0,max=59"`
+}
+
+// FrequencyRule правило периодичности
+type FrequencyRule struct {
+    Type           FrequencyType           `json:"type" validate:"required"`
+    Daily          *DailyFrequency         `json:"daily,omitempty"`
+    Monthly        *MonthlyFrequency       `json:"monthly,omitempty"`
+    SpecificDates  *SpecificDatesFrequency `json:"specific_dates,omitempty"`
+    Parity         *ParityFrequency        `json:"parity,omitempty"`
+}
+
+func (rule *FrequencyRule) IsEmpty() (bool) {
+    return rule == nil || reflect.DeepEqual(*rule, FrequencyRule{})
+}
+
+func (rule *FrequencyRule) Valid() (bool, error) {
+    
+    if rule.IsEmpty() {
+        return true, nil
+    }
+
+    switch rule.Type {
+
+    case Daily:
+        if rule.Daily == nil {
+            return false, ErrDailyConfigIsRequired
+        }
+        if rule.Daily.Interval < 1 || rule.Daily.Interval > 365 {
+            return false, ErrInvalidDailyInterval
+        }
+        if rule.Daily.Hour < 0 || rule.Daily.Hour > 23 {
+            return false, ErrInvalidHour
+        }
+        if rule.Daily.Minute < 0 || rule.Daily.Minute > 59 {
+            return false, ErrInvalidMinute
+        }
+        
+    case Monthly:
+        if rule.Monthly == nil {
+            return false, ErrMonthlyConfigIsRequired
+        }
+        if rule.Monthly.DayOfMonth < 1 || rule.Monthly.DayOfMonth > 31 {
+            return false, ErrInvalidMonthlyInterval
+        }
+        if rule.Monthly.Hour < 0 || rule.Monthly.Hour > 23 {
+            return false, ErrInvalidHour
+        }
+        if rule.Monthly.Minute < 0 || rule.Monthly.Minute > 59 {
+            return false, ErrInvalidMinute
+        }
+        
+    case SpecificDates:
+        if rule.SpecificDates == nil {
+            return false, ErrSpecificDatesIsRequired
+        }
+        if len(rule.SpecificDates.Dates) == 0 {
+            return false, ErrAtLeastOneDateIsRequired
+        }
+        
+        for _, date := range rule.SpecificDates.Dates {
+            // Парсим только дату (без времени)
+            parsed, err := time.Parse("2006-01-02", date)
+            if err != nil || parsed.Format("2006-01-02") != date {
+                return false, &InvalidDateError{
+                    Format: "YYYY-MM-DD",
+                    Date:   date,
+                    Err:    ErrInvalidDate,
+                }
+            }
+        }
+        
+        // Дополнительная валидация часа и минуты
+        if rule.SpecificDates.Hour < 0 || rule.SpecificDates.Hour > 23 {
+            return false, ErrInvalidHour
+        }
+        if rule.SpecificDates.Minute < 0 || rule.SpecificDates.Minute > 59 {
+            return false, ErrInvalidMinute
+        }
+    case Parity:
+        if rule.Parity == nil {
+            return false, ErrParityConfigIsRequired
+        }
+        if rule.Parity.Type != Even && rule.Parity.Type != Odd {
+            return false, ErrInvalidParityType
+        }
+        
+    default:
+        return false, &UnknownFrequencyTypeError{
+            Type: string(rule.Type),
+            Err: ErrUnknownFrequencyType,
+        }
+    }
+    
+    return true, nil
+}
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\domain\task\frequency_test.go
+Размер: 13,755 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import (
+    "testing"
+)
+
+func TestFrequencyRule_Valid(t *testing.T) {
+    tests := []struct {
+        name    string
+        rule    *FrequencyRule
+        want    bool
+        wantErr bool
+    }{
+        {
+            name: "valid daily frequency",
+            rule: &FrequencyRule{
+                Type: Daily,
+                Daily: &DailyFrequency{
+                    Interval: 5,
+                    Hour:     10,
+                    Minute:   30,
+                },
+            },
+            want:    true,
+            wantErr: false,
+        },
+        {
+            name: "valid monthly frequency",
+            rule: &FrequencyRule{
+                Type: Monthly,
+                Monthly: &MonthlyFrequency{
+                    DayOfMonth: 15,
+                    Hour:       14,
+                    Minute:     0,
+                },
+            },
+            want:    true,
+            wantErr: false,
+        },
+        {
+            name: "valid specific dates frequency",
+            rule: &FrequencyRule{
+                Type: SpecificDates,
+                SpecificDates: &SpecificDatesFrequency{
+                    Dates: []string{"2024-12-25", "2024-12-31"},
+                    Hour:  12,
+                    Minute: 0,
+                },
+            },
+            want:    true,
+            wantErr: false,
+        },
+        {
+            name: "valid parity even",
+            rule: &FrequencyRule{
+                Type: Parity,
+                Parity: &ParityFrequency{
+                    Type:   Even,
+                    Hour:   8,
+                    Minute: 0,
+                },
+            },
+            want:    true,
+            wantErr: false,
+        },
+        {
+            name: "valid parity odd",
+            rule: &FrequencyRule{
+                Type: Parity,
+                Parity: &ParityFrequency{
+                    Type:   Odd,
+                    Hour:   17,
+                    Minute: 45,
+                },
+            },
+            want:    true,
+            wantErr: false,
+        },
+        {
+            name: "daily config missing",
+            rule: &FrequencyRule{
+                Type:  Daily,
+                Daily: nil,
+            },
+            want:    false,
+            wantErr: true,
+        },
+        {
+            name: "daily interval too small",
+            rule: &FrequencyRule{
+                Type: Daily,
+                Daily: &DailyFrequency{
+                    Interval: 0,
+                    Hour:     10,
+                    Minute:   30,
+                },
+            },
+            want:    false,
+            wantErr: true,
+        },
+        {
+            name: "daily interval too large",
+            rule: &FrequencyRule{
+                Type: Daily,
+                Daily: &DailyFrequency{
+                    Interval: 400,
+                    Hour:     10,
+                    Minute:   30,
+                },
+            },
+            want:    false,
+            wantErr: true,
+        },
+        {
+            name: "monthly config missing",
+            rule: &FrequencyRule{
+                Type:    Monthly,
+                Monthly: nil,
+            },
+            want:    false,
+            wantErr: true,
+        },
+        {
+            name: "monthly day too small",
+            rule: &FrequencyRule{
+                Type: Monthly,
+                Monthly: &MonthlyFrequency{
+                    DayOfMonth: 0,
+                    Hour:       14,
+                    Minute:     0,
+                },
+            },
+            want:    false,
+            wantErr: true,
+        },
+        {
+            name: "monthly day too large",
+            rule: &FrequencyRule{
+                Type: Monthly,
+                Monthly: &MonthlyFrequency{
+                    DayOfMonth: 32,
+                    Hour:       14,
+                    Minute:     0,
+                },
+            },
+            want:    false,
+            wantErr: true,
+        },
+        {
+            name: "specific dates config missing",
+            rule: &FrequencyRule{
+                Type:          SpecificDates,
+                SpecificDates: nil,
+            },
+            want:    false,
+            wantErr: true,
+        },
+        {
+            name: "specific dates empty list",
+            rule: &FrequencyRule{
+                Type: SpecificDates,
+                SpecificDates: &SpecificDatesFrequency{
+                    Dates: []string{},
+                    Hour:  12,
+                    Minute: 0,
+                },
+            },
+            want:    false,
+            wantErr: true,
+        },
+        {
+            name: "specific dates invalid format",
+            rule: &FrequencyRule{
+                Type: SpecificDates,
+                SpecificDates: &SpecificDatesFrequency{
+                    Dates: []string{"2024-12-25 12:00"},
+                    Hour:  12,
+                    Minute: 0,
+                },
+            },
+            want:    false,
+            wantErr: true,
+        },
+        {
+            name: "specific dates completely wrong format",
+            rule: &FrequencyRule{
+                Type: SpecificDates,
+                SpecificDates: &SpecificDatesFrequency{
+                    Dates: []string{"invalid-date"},
+                    Hour:  12,
+                    Minute: 0,
+                },
+            },
+            want:    false,
+            wantErr: true,
+        },
+        {
+            name: "parity config missing",
+            rule: &FrequencyRule{
+                Type:   Parity,
+                Parity: nil,
+            },
+            want:    false,
+            wantErr: true,
+        },
+        {
+            name: "parity invalid type",
+            rule: &FrequencyRule{
+                Type: Parity,
+                Parity: &ParityFrequency{
+                    Type:   "invalid",
+                    Hour:   8,
+                    Minute: 0,
+                },
+            },
+            want:    false,
+            wantErr: true,
+        },
+        {
+            name: "unknown frequency type",
+            rule: &FrequencyRule{
+                Type: "unknown",
+            },
+            want:    false,
+            wantErr: true,
+        },
+    }
+
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            got, err := tt.rule.Valid()
+            if (err != nil) != tt.wantErr {
+                t.Errorf("Valid() error = %v, wantErr %v", err, tt.wantErr)
+                return
+            }
+            if got != tt.want {
+                t.Errorf("Valid() = %v, want %v", got, tt.want)
+            }
+        })
+    }
+}
+
+func TestDailyFrequency_EdgeCases(t *testing.T) {
+    tests := []struct {
+        name     string
+        interval int
+        hour     int
+        minute   int
+        wantErr  bool
+    }{
+        {"min valid interval", 1, 0, 0, false},
+        {"max valid interval", 365, 23, 59, false},
+        {"interval 366", 366, 12, 30, true},
+        {"hour -1", 5, -1, 30, true}, // hour validation not in Valid()
+        {"hour 24", 5, 24, 30, true}, // hour validation not in Valid()
+        {"minute -1", 5, 12, -1, true},
+        {"minute 60", 5, 12, 60, true},
+    }
+
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            rule := &FrequencyRule{
+                Type: Daily,
+                Daily: &DailyFrequency{
+                    Interval: tt.interval,
+                    Hour:     tt.hour,
+                    Minute:   tt.minute,
+                },
+            }
+            _, err := rule.Valid()
+            if (err != nil) != tt.wantErr {
+                t.Errorf("Valid() error = %v, wantErr %v", err, tt.wantErr)
+            }
+        })
+    }
+}
+
+func TestSpecificDatesFrequency_DateFormats(t *testing.T) {
+    validDates := []string{
+        "2024-01-01",
+        "2024-12-31",
+        "2024-02-29", // leap year
+        "2023-02-28",
+        "2025-06-15",
+    }
+
+    for _, date := range validDates {
+        t.Run("valid date: "+date, func(t *testing.T) {
+            rule := &FrequencyRule{
+                Type: SpecificDates,
+                SpecificDates: &SpecificDatesFrequency{
+                    Dates:  []string{date},
+                    Hour:   12,
+                    Minute: 0,
+                },
+            }
+            got, err := rule.Valid()
+            if err != nil {
+                t.Errorf("Expected no error for valid date %s, got %v", date, err)
+            }
+            if !got {
+                t.Errorf("Expected true for valid date %s, got false", date)
+            }
+        })
+    }
+
+    invalidDates := []string{
+        "2024-13-01", // invalid month
+        "2024-00-01", // invalid month
+        "2024-01-32", // invalid day
+        "2024-02-30", // invalid day for feb
+        "not-a-date",
+    }
+
+    for _, date := range invalidDates {
+        t.Run("invalid date: "+date, func(t *testing.T) {
+            rule := &FrequencyRule{
+                Type: SpecificDates,
+                SpecificDates: &SpecificDatesFrequency{
+                    Dates:  []string{date},
+                    Hour:   12,
+                    Minute: 0,
+                },
+            }
+            _, err := rule.Valid()
+            if err == nil {
+                t.Errorf("Expected error for invalid date %s, got nil", date)
+            }
+        })
+    }
+}
+
+func TestParityFrequency_Validation(t *testing.T) {
+    validParityTypes := []ParityType{Even, Odd}
+    
+    for _, parityType := range validParityTypes {
+        t.Run("valid parity type: "+string(parityType), func(t *testing.T) {
+            rule := &FrequencyRule{
+                Type: Parity,
+                Parity: &ParityFrequency{
+                    Type:   parityType,
+                    Hour:   12,
+                    Minute: 0,
+                },
+            }
+            got, err := rule.Valid()
+            if err != nil {
+                t.Errorf("Unexpected error for valid parity type: %v", err)
+            }
+            if !got {
+                t.Errorf("Expected true for valid parity type, got false")
+            }
+        })
+    }
+
+    t.Run("invalid parity type", func(t *testing.T) {
+        rule := &FrequencyRule{
+            Type: Parity,
+            Parity: &ParityFrequency{
+                Type:   "invalid",
+                Hour:   12,
+                Minute: 0,
+            },
+        }
+        _, err := rule.Valid()
+        if err == nil {
+            t.Error("Expected error for invalid parity type, got nil")
+        }
+    })
+}
+
+func TestFrequencyRule_MultipleDates(t *testing.T) {
+    t.Run("multiple valid dates", func(t *testing.T) {
+        rule := &FrequencyRule{
+            Type: SpecificDates,
+            SpecificDates: &SpecificDatesFrequency{
+                Dates: []string{
+                    "2024-01-01",
+                    "2024-02-01",
+                    "2024-03-01",
+                    "2024-04-01",
+                },
+                Hour:   9,
+                Minute: 0,
+            },
+        }
+        got, err := rule.Valid()
+        if err != nil {
+            t.Errorf("Unexpected error: %v", err)
+        }
+        if !got {
+            t.Error("Expected true for multiple valid dates")
+        }
+    })
+
+    t.Run("mixed valid and invalid dates", func(t *testing.T) {
+        rule := &FrequencyRule{
+            Type: SpecificDates,
+            SpecificDates: &SpecificDatesFrequency{
+                Dates: []string{
+                    "2024-01-01 09:00",
+                    "invalid-date",
+                    "2024-03-01 09:00",
+                },
+                Hour:   9,
+                Minute: 0,
+            },
+        }
+        _, err := rule.Valid()
+        if err == nil {
+            t.Error("Expected error for mixed valid/invalid dates")
+        }
+    })
+}
+
+func TestFrequencyRule_NilConfigs(t *testing.T) {
+    frequencyTypes := []FrequencyType{Daily, Monthly, SpecificDates, Parity}
+    
+    for _, freqType := range frequencyTypes {
+        t.Run("nil config for "+string(freqType), func(t *testing.T) {
+            rule := &FrequencyRule{
+                Type: freqType,
+            }
+            
+            // Set all configs to nil
+            rule.Daily = nil
+            rule.Monthly = nil
+            rule.SpecificDates = nil
+            rule.Parity = nil
+            
+            _, err := rule.Valid()
+            if err == nil {
+                t.Errorf("Expected error for nil config with type %s", freqType)
+            }
+        })
+    }
+}
+
+// Benchmark tests
+func BenchmarkFrequencyRule_Valid(b *testing.B) {
+    rule := &FrequencyRule{
+        Type: Daily,
+        Daily: &DailyFrequency{
+            Interval: 5,
+            Hour:     10,
+            Minute:   30,
+        },
+    }
+    
+    b.ResetTimer()
+    for i := 0; i < b.N; i++ {
+        rule.Valid()
+    }
+}
+
+func BenchmarkSpecificDates_Valid(b *testing.B) {
+    dates := make([]string, 100)
+    for i := 0; i < 100; i++ {
+        dates[i] = "2024-01-01 10:00"
+    }
+    
+    rule := &FrequencyRule{
+        Type: SpecificDates,
+        SpecificDates: &SpecificDatesFrequency{
+            Dates:  dates,
+            Hour:   10,
+            Minute: 0,
+        },
+    }
+    
+    b.ResetTimer()
+    for i := 0; i < b.N; i++ {
+        rule.Valid()
+    }
+}
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\domain\task\repository.go
+Размер: 489 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import (
+	"context"
+	"time"
+)
+
+type Repository interface {
+	Create(ctx context.Context, task *Task) (*Task, error)
+	GetByID(ctx context.Context, id int64) (*Task, error)
+	Update(ctx context.Context, task *Task) (*Task, error)
+	Delete(ctx context.Context, id int64) (error)
+	List(ctx context.Context) ([]Task, error)
+	GetTasksForExecution(ctx context.Context) ([]Task, error)
+	UpdateNextRunTime(ctx context.Context, id int64, nextRun time.Time) (*Task, error)
+}
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\domain\task\scheduler.go
+Размер: 686 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import (
+    "context"
+    "time"
+)
+
+type Scheduler interface {
+    Start(ctx context.Context) error
+    Stop()
+    ScheduleTask(ctx context.Context, task Task) (*Task, error)
+    UnscheduleTask(ctx context.Context, taskID int64) error
+}
+
+type NextRunCalculator interface {
+    Calculate(task Task, now time.Time) (time.Time, error)
+    CalculateDaily(freq DailyFrequency, now time.Time) (time.Time, error)
+    CalculateMonthly(freq MonthlyFrequency, now time.Time) (time.Time, error)
+    CalculateSpecificDates(freq SpecificDatesFrequency, now time.Time) (time.Time, error)
+    CalculateParity(freq ParityFrequency, now time.Time) (time.Time, error)
+}
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\domain\task\task.go
+Размер: 712 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import (
+	"time"
+)
+
+type Status string
+
+const (
+	StatusNew        Status = "new"
+	StatusInProgress Status = "in_progress"
+	StatusDone       Status = "done"
+)
+
+type Task struct {
+	ID          int64     		`json:"id"`
+	Title       string    		`json:"title"`
+	Description string    		`json:"description"`
+	Status      Status    		`json:"status"`
+	Frequency   FrequencyRule 	`json:"frequency"`
+	NextRunTime time.Time   	`json:"next_run_time"`
+	CreatedAt   time.Time 		`json:"created_at"`
+	UpdatedAt   time.Time 		`json:"updated_at"`
+}
+
+func (s Status) Valid() bool {
+	switch s {
+	case StatusNew, StatusInProgress, StatusDone:
+		return true
+	default:
+		return false
+	}
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\domain\task\usecase.go
+Размер: 604 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import (
+	"context"
+)
+
+type Usecase interface {
+	Create(ctx context.Context, input CreateInput) (*Task, error)
+	GetByID(ctx context.Context, id int64) (*Task, error)
+	Update(ctx context.Context, id int64, input UpdateInput) (*Task, error)
+	Delete(ctx context.Context, id int64) error
+	List(ctx context.Context) ([]Task, error)
+}
+
+
+type CreateInput struct {
+	Title       string
+	Description string
+	Status      Status
+	Frequency   FrequencyRule
+}
+
+type UpdateInput struct {
+	Title       string
+	Description string
+	Status      Status
+	Frequency   FrequencyRule
+}
+
+
+================================================================================
+📁 ПАПКА: alneremin/internal\infrastructure/
+================================================================================
+
+================================================================================
+📁 ПАПКА: alneremin/internal\infrastructure\postgres/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\infrastructure\postgres\pool.go
+Размер: 512 байт
+────────────────────────────────────────────────────────────────────────────────
+package postgres
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+func Open(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
+	if dsn == "" {
+		return nil, fmt.Errorf("database dsn is empty")
+	}
+
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, err
+	}
+
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, err
+	}
+
+	return pool, nil
+}
+
+
+================================================================================
+📁 ПАПКА: alneremin/internal\infrastructure\scheduler/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\infrastructure\scheduler\calculator.go
+Размер: 5,987 байт
+────────────────────────────────────────────────────────────────────────────────
+package scheduler
+
+import (
+    "fmt"
+	"time"
+    taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type NextRunCalculatorImpl struct{}
+
+func NewNextRunCalculator() *NextRunCalculatorImpl {
+    return &NextRunCalculatorImpl{}
+}
+
+// Calculate реализует taskdomain.NextRunCalculator интерфейс
+func (c *NextRunCalculatorImpl) Calculate(task taskdomain.Task, now time.Time) (time.Time, error) {
+
+    switch task.Frequency.Type {
+    case taskdomain.Daily:
+        return c.CalculateDaily(*task.Frequency.Daily, now)
+    case taskdomain.Monthly:
+        return c.CalculateMonthly(*task.Frequency.Monthly, now)
+    case taskdomain.SpecificDates:
+        return c.CalculateSpecificDates(*task.Frequency.SpecificDates, now)
+    case taskdomain.Parity:
+        return c.CalculateParity(*task.Frequency.Parity, now)
+    default:
+        return time.Time{}, taskdomain.ErrUnknownFrequencyType
+    }
+}
+
+
+func (c *NextRunCalculatorImpl) CalculateDaily(freq taskdomain.DailyFrequency, fromTime time.Time) (time.Time, error) {
+    // Устанавливаем время на указанный час и минуту для текущего дня
+    nextRun := time.Date(fromTime.Year(), fromTime.Month(), fromTime.Day(),
+        freq.Hour, freq.Minute, 0, 0, fromTime.Location())
+    
+    // Если заданное время уже прошло сегодня, начинаем со следующего дня
+    if !nextRun.After(fromTime) {
+        nextRun = nextRun.AddDate(0, 0, 1)
+    }
+    
+    // Прибавляем интервал в днях
+    // Если интервал = 1, то прибавляем 1 день
+    // Если интервал = 3, то прибавляем 3 дня и т.д.
+    if freq.Interval > 1 {
+        nextRun = nextRun.AddDate(0, 0, freq.Interval-1)
+    }
+    
+    return nextRun, nil
+}
+
+func (c *NextRunCalculatorImpl) CalculateMonthly(freq taskdomain.MonthlyFrequency, fromTime time.Time) (time.Time, error) {
+    // Получаем первый день следующего месяца, содержащего нужное число
+    year := fromTime.Year()
+    month := fromTime.Month()
+    
+    // Пытаемся найти дату в текущем месяце
+    targetDay := freq.DayOfMonth
+    
+    // Проверяем, существует ли такой день в текущем месяце
+    lastDayOfMonth := time.Date(year, month+1, 0, 0, 0, 0, 0, fromTime.Location()).Day()
+    
+    // Корректируем день, если он выходит за пределы месяца
+    if targetDay > lastDayOfMonth {
+        targetDay = lastDayOfMonth
+    }
+    
+    nextRun := time.Date(year, month, targetDay,
+        freq.Hour, freq.Minute, 0, 0, fromTime.Location())
+    
+    // Если время в текущем месяце уже прошло, переходим на следующий месяц
+    if nextRun.Before(fromTime) {
+        // Переходим на следующий месяц
+        nextMonth := fromTime.AddDate(0, 1, 0)
+        year = nextMonth.Year()
+        month = nextMonth.Month()
+        
+        // Повторно проверяем существование дня в следующем месяце
+        lastDayOfMonth = time.Date(year, month+1, 0, 0, 0, 0, 0, fromTime.Location()).Day()
+        if targetDay > lastDayOfMonth {
+            targetDay = lastDayOfMonth
+        }
+        
+        nextRun = time.Date(year, month, targetDay,
+            freq.Hour, freq.Minute, 0, 0, fromTime.Location())
+    }
+    
+    return nextRun, nil
+}
+
+func (c *NextRunCalculatorImpl) CalculateSpecificDates(freq taskdomain.SpecificDatesFrequency, fromTime time.Time) (time.Time, error) {
+    // Парсим все даты и сортируем их
+    var dates []time.Time
+    
+    for _, dateStr := range freq.Dates {
+        parsedDate, err := time.Parse("2006-01-02", dateStr)
+        if err != nil {
+            return time.Time{}, fmt.Errorf("invalid date format: %s, expected YYYY-MM-DD", dateStr)
+        }
+        
+        // Устанавливаем время выполнения
+        dateTime := time.Date(parsedDate.Year(), parsedDate.Month(), parsedDate.Day(),
+            freq.Hour, freq.Minute, 0, 0, fromTime.Location())
+        
+        // Добавляем только будущие даты
+        if dateTime.After(fromTime) {
+            dates = append(dates, dateTime)
+        }
+    }
+    
+    if len(dates) == 0 {
+        return time.Time{}, fmt.Errorf("no future dates available for execution")
+    }
+    
+    // Находим ближайшую дату
+    nextRun := dates[0]
+    for _, date := range dates {
+        if date.Before(nextRun) {
+            nextRun = date
+        }
+    }
+    
+    return nextRun, nil
+}
+
+func (c *NextRunCalculatorImpl) CalculateParity(freq taskdomain.ParityFrequency, fromTime time.Time) (time.Time, error) {
+    // Начинаем с текущей даты
+    nextRun := time.Date(fromTime.Year(), fromTime.Month(), fromTime.Day(),
+        freq.Hour, freq.Minute, 0, 0, fromTime.Location())
+    
+    // Если время уже прошло сегодня, начинаем с завтра
+    if nextRun.Before(fromTime) || nextRun.Equal(fromTime) {
+        nextRun = nextRun.AddDate(0, 0, 1)
+    }
+    
+    // Ищем подходящий день с нужной четностью
+    for {
+        day := nextRun.Day()
+        isEven := day%2 == 0
+        
+        // Проверяем соответствие четности
+        if (freq.Type == taskdomain.Even && isEven) || (freq.Type == taskdomain.Odd && !isEven) {
+            break
+        }
+        
+        // Переходим к следующему дню
+        nextRun = nextRun.AddDate(0, 0, 1)
+    }
+    
+    return nextRun, nil
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\infrastructure\scheduler\calculator_test.go
+Размер: 14,223 байт
+────────────────────────────────────────────────────────────────────────────────
+package scheduler
+
+import (
+    "testing"
+    "time"
+    
+    taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+func TestNextRunCalculatorImpl_Calculate(t *testing.T) {
+    calculator := NewNextRunCalculator()
+    now := time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)
+    
+    tests := []struct {
+        name      string
+        task      taskdomain.Task
+        now       time.Time
+        want      time.Time
+        wantError error
+    }{
+        {
+            name: "daily frequency",
+            task: taskdomain.Task{
+                Frequency: taskdomain.FrequencyRule{
+                    Type:  taskdomain.Daily,
+                    Daily: &taskdomain.DailyFrequency{Hour: 14, Minute: 30, Interval: 1},
+                },
+            },
+            now:  now,
+            want: time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC),
+        },
+        {
+            name: "monthly frequency",
+            task: taskdomain.Task{
+                Frequency: taskdomain.FrequencyRule{
+                    Type:    taskdomain.Monthly,
+                    Monthly: &taskdomain.MonthlyFrequency{DayOfMonth: 20, Hour: 9, Minute: 0},
+                },
+            },
+            now:  now,
+            want: time.Date(2024, 1, 20, 9, 0, 0, 0, time.UTC),
+        },
+        {
+            name: "unknown frequency type",
+            task: taskdomain.Task{
+                Frequency: taskdomain.FrequencyRule{
+                    Type: "unknown",
+                },
+            },
+            now:       now,
+            wantError: taskdomain.ErrUnknownFrequencyType,
+        },
+    }
+    
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            got, err := calculator.Calculate(tt.task, tt.now)
+            if tt.wantError != nil {
+                if err != tt.wantError {
+                    t.Errorf("Calculate() error = %v, want %v", err, tt.wantError)
+                }
+                return
+            }
+            if err != nil {
+                t.Errorf("Calculate() unexpected error: %v", err)
+            }
+            if !got.Equal(tt.want) {
+                t.Errorf("Calculate() = %v, want %v", got, tt.want)
+            }
+        })
+    }
+}
+
+func TestNextRunCalculatorImpl_CalculateDaily(t *testing.T) {
+    calculator := &NextRunCalculatorImpl{}
+    
+    tests := []struct {
+        name     string
+        freq     taskdomain.DailyFrequency
+        fromTime time.Time
+        want     time.Time
+    }{
+        {
+            name:     "same day - future time",
+            freq:     taskdomain.DailyFrequency{Hour: 14, Minute: 30, Interval: 1},
+            fromTime: time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC),
+            want:     time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC),
+        },
+        {
+            name:     "same day - past time, next day",
+            freq:     taskdomain.DailyFrequency{Hour: 8, Minute: 0, Interval: 1},
+            fromTime: time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC),
+            want:     time.Date(2024, 1, 16, 8, 0, 0, 0, time.UTC),
+        },
+        {
+            name:     "interval 3 days",
+            freq:     taskdomain.DailyFrequency{Hour: 14, Minute: 30, Interval: 3},
+            fromTime: time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC),
+            want:     time.Date(2024, 1, 17, 14, 30, 0, 0, time.UTC),
+        },
+        {
+            name:     "interval 1 day - exact time match",
+            freq:     taskdomain.DailyFrequency{Hour: 10, Minute: 0, Interval: 1},
+            fromTime: time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC),
+            want:     time.Date(2024, 1, 16, 10, 0, 0, 0, time.UTC),
+        },
+        {
+            name:     "end of month transition",
+            freq:     taskdomain.DailyFrequency{Hour: 23, Minute: 59, Interval: 1},
+            fromTime: time.Date(2024, 1, 31, 22, 0, 0, 0, time.UTC),
+            want:     time.Date(2024, 1, 31, 23, 59, 0, 0, time.UTC),
+        },
+    }
+    
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            got, err := calculator.CalculateDaily(tt.freq, tt.fromTime)
+            if err != nil {
+                t.Errorf("CalculateDaily() unexpected error: %v", err)
+            }
+            if !got.Equal(tt.want) {
+                t.Errorf("CalculateDaily() = %v, want %v", got, tt.want)
+            }
+        })
+    }
+}
+
+func TestNextRunCalculatorImpl_CalculateMonthly(t *testing.T) {
+    calculator := &NextRunCalculatorImpl{}
+    
+    tests := []struct {
+        name     string
+        freq     taskdomain.MonthlyFrequency
+        fromTime time.Time
+        want     time.Time
+    }{
+        {
+            name:     "same month - future date",
+            freq:     taskdomain.MonthlyFrequency{DayOfMonth: 20, Hour: 14, Minute: 30},
+            fromTime: time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC),
+            want:     time.Date(2024, 1, 20, 14, 30, 0, 0, time.UTC),
+        },
+        {
+            name:     "same month - past date, next month",
+            freq:     taskdomain.MonthlyFrequency{DayOfMonth: 10, Hour: 14, Minute: 30},
+            fromTime: time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC),
+            want:     time.Date(2024, 2, 10, 14, 30, 0, 0, time.UTC),
+        },
+        {
+            name:     "february - day 30 adjusted to 28",
+            freq:     taskdomain.MonthlyFrequency{DayOfMonth: 30, Hour: 12, Minute: 0},
+            fromTime: time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC),
+            want:     time.Date(2024, 1, 30, 12, 0, 0, 0, time.UTC),
+        },
+        {
+            name:     "february in leap year - day 30 adjusted to 29",
+            freq:     taskdomain.MonthlyFrequency{DayOfMonth: 30, Hour: 12, Minute: 0},
+            fromTime: time.Date(2024, 2, 15, 10, 0, 0, 0, time.UTC),
+            want:     time.Date(2024, 2, 29, 12, 0, 0, 0, time.UTC),
+        },
+        {
+            name:     "december to january transition",
+            freq:     taskdomain.MonthlyFrequency{DayOfMonth: 5, Hour: 9, Minute: 0},
+            fromTime: time.Date(2024, 12, 10, 10, 0, 0, 0, time.UTC),
+            want:     time.Date(2025, 1, 5, 9, 0, 0, 0, time.UTC),
+        },
+        {
+            name:     "exact time match - same day and time",
+            freq:     taskdomain.MonthlyFrequency{DayOfMonth: 15, Hour: 10, Minute: 0},
+            fromTime: time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC),
+            want:     time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC),
+        },
+    }
+    
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            got, err := calculator.CalculateMonthly(tt.freq, tt.fromTime)
+            if err != nil {
+                t.Errorf("CalculateMonthly() unexpected error: %v", err)
+            }
+            if !got.Equal(tt.want) {
+                t.Errorf("CalculateMonthly() = %v, want %v", got, tt.want)
+            }
+        })
+    }
+}
+
+func TestNextRunCalculatorImpl_CalculateSpecificDates(t *testing.T) {
+    calculator := &NextRunCalculatorImpl{}
+    
+    tests := []struct {
+        name      string
+        freq      taskdomain.SpecificDatesFrequency
+        fromTime  time.Time
+        want      time.Time
+        wantError bool
+    }{
+        {
+            name: "single future date",
+            freq: taskdomain.SpecificDatesFrequency{
+                Dates: []string{"2024-01-20"},
+                Hour:  14, Minute: 30,
+            },
+            fromTime: time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC),
+            want:     time.Date(2024, 1, 20, 14, 30, 0, 0, time.UTC),
+        },
+        {
+            name: "multiple dates - pick earliest future",
+            freq: taskdomain.SpecificDatesFrequency{
+                Dates: []string{"2024-01-25", "2024-01-20", "2024-01-30"},
+                Hour:  9, Minute: 0,
+            },
+            fromTime: time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC),
+            want:     time.Date(2024, 1, 20, 9, 0, 0, 0, time.UTC),
+        },
+        {
+            name: "today's date with future time",
+            freq: taskdomain.SpecificDatesFrequency{
+                Dates: []string{"2024-01-15"},
+                Hour:  14, Minute: 30,
+            },
+            fromTime: time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC),
+            want:     time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC),
+        },
+        {
+            name: "today's date with past time - include anyway",
+            freq: taskdomain.SpecificDatesFrequency{
+                Dates: []string{"2024-01-15"},
+                Hour:  8, Minute: 0,
+            },
+            fromTime: time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC),
+            wantError: true,
+        },
+        {
+            name: "all dates in past",
+            freq: taskdomain.SpecificDatesFrequency{
+                Dates: []string{"2024-01-10", "2024-01-12"},
+                Hour:  14, Minute: 30,
+            },
+            fromTime:  time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC),
+            wantError: true,
+        },
+        {
+            name: "invalid date format",
+            freq: taskdomain.SpecificDatesFrequency{
+                Dates: []string{"2024/01/20"},
+                Hour:  14, Minute: 30,
+            },
+            fromTime:  time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC),
+            wantError: true,
+        },
+    }
+    
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            got, err := calculator.CalculateSpecificDates(tt.freq, tt.fromTime)
+            if tt.wantError {
+                if err == nil {
+                    t.Errorf("CalculateSpecificDates() expected error but got none")
+                }
+                return
+            }
+            if err != nil {
+                t.Errorf("CalculateSpecificDates() unexpected error: %v", err)
+            }
+            if !got.Equal(tt.want) {
+                t.Errorf("CalculateSpecificDates() = %v, want %v", got, tt.want)
+            }
+        })
+    }
+}
+
+func TestNextRunCalculatorImpl_CalculateParity(t *testing.T) {
+    calculator := &NextRunCalculatorImpl{}
+    
+    tests := []struct {
+        name     string
+        freq     taskdomain.ParityFrequency
+        fromTime time.Time
+        want     time.Time
+    }{
+        {
+            name: "even day - same day",
+            freq: taskdomain.ParityFrequency{
+                Type: taskdomain.Even,
+                Hour: 14, Minute: 30,
+            },
+            fromTime: time.Date(2024, 1, 16, 10, 0, 0, 0, time.UTC), // 16 - even
+            want:     time.Date(2024, 1, 16, 14, 30, 0, 0, time.UTC),
+        },
+        {
+            name: "even day - need next day",
+            freq: taskdomain.ParityFrequency{
+                Type: taskdomain.Even,
+                Hour: 14, Minute: 30,
+            },
+            fromTime: time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC), // 15 - odd, next even is 16
+            want:     time.Date(2024, 1, 16, 14, 30, 0, 0, time.UTC),
+        },
+        {
+            name: "odd day - same day",
+            freq: taskdomain.ParityFrequency{
+                Type: taskdomain.Odd,
+                Hour: 14, Minute: 30,
+            },
+            fromTime: time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC), // 15 - odd
+            want:     time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC),
+        },
+        {
+            name: "odd day - need next day",
+            freq: taskdomain.ParityFrequency{
+                Type: taskdomain.Odd,
+                Hour: 14, Minute: 30,
+            },
+            fromTime: time.Date(2024, 1, 16, 10, 0, 0, 0, time.UTC), // 16 - even, next odd is 17
+            want:     time.Date(2024, 1, 17, 14, 30, 0, 0, time.UTC),
+        },
+        {
+            name: "even day - time passed today",
+            freq: taskdomain.ParityFrequency{
+                Type: taskdomain.Even,
+                Hour: 8, Minute: 0,
+            },
+            fromTime: time.Date(2024, 1, 16, 10, 0, 0, 0, time.UTC), // time passed, but day is even
+            want:     time.Date(2024, 1, 18, 8, 0, 0, 0, time.UTC),  // next even day
+        },
+        {
+            name: "month transition",
+            freq: taskdomain.ParityFrequency{
+                Type: taskdomain.Even,
+                Hour: 12, Minute: 0,
+            },
+            fromTime: time.Date(2024, 1, 31, 10, 0, 0, 0, time.UTC), // 31 - odd, next even is Feb 2
+            want:     time.Date(2024, 2, 2, 12, 0, 0, 0, time.UTC),
+        },
+        {
+            name: "year transition",
+            freq: taskdomain.ParityFrequency{
+                Type: taskdomain.Odd,
+                Hour: 12, Minute: 0,
+            },
+            fromTime: time.Date(2024, 12, 30, 10, 0, 0, 0, time.UTC), // 30 - even, next odd is Dec 31
+            want:     time.Date(2024, 12, 31, 12, 0, 0, 0, time.UTC),
+        },
+    }
+    
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            got, err := calculator.CalculateParity(tt.freq, tt.fromTime)
+            if err != nil {
+                t.Errorf("CalculateParity() unexpected error: %v", err)
+            }
+            if !got.Equal(tt.want) {
+                t.Errorf("CalculateParity() = %v, want %v", got, tt.want)
+            }
+        })
+    }
+}
+
+// Бенчмарк тесты
+func BenchmarkCalculateDaily(b *testing.B) {
+    calculator := &NextRunCalculatorImpl{}
+    freq := taskdomain.DailyFrequency{Hour: 14, Minute: 30, Interval: 1}
+    fromTime := time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)
+    
+    for i := 0; i < b.N; i++ {
+        _, _ = calculator.CalculateDaily(freq, fromTime)
+    }
+}
+
+func BenchmarkCalculateMonthly(b *testing.B) {
+    calculator := &NextRunCalculatorImpl{}
+    freq := taskdomain.MonthlyFrequency{DayOfMonth: 20, Hour: 14, Minute: 30}
+    fromTime := time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)
+    
+    for i := 0; i < b.N; i++ {
+        _, _ = calculator.CalculateMonthly(freq, fromTime)
+    }
+}
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\infrastructure\scheduler\scheduler.go
+Размер: 5,503 байт
+────────────────────────────────────────────────────────────────────────────────
+package scheduler
+
+import (
+    "context"
+    "log"
+    "sync"
+    "time"
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+// TaskScheduler реализует интерфейс Scheduler
+type TaskScheduler struct {
+    repo       taskdomain.Repository
+    calculator taskdomain.NextRunCalculator
+    executor   *TaskExecutor
+    ticker     *time.Ticker
+    stopChan   chan struct{}
+    wg         sync.WaitGroup
+    interval   time.Duration
+}
+
+type TaskExecutor struct {
+    workerCount int
+    taskQueue   chan taskdomain.Task
+    wg          sync.WaitGroup
+    repo        taskdomain.Repository
+    calculator  taskdomain.NextRunCalculator
+}
+
+type Config struct {
+    CheckInterval time.Duration
+    WorkerCount   int
+}
+
+func NewTaskScheduler(repo taskdomain.Repository, config Config) *TaskScheduler {
+    if config.CheckInterval == 0 {
+        config.CheckInterval = 1 * time.Minute
+    }
+    if config.WorkerCount == 0 {
+        config.WorkerCount = 5
+    }
+
+    return &TaskScheduler{
+        repo:       repo,
+        calculator: NewNextRunCalculator(),
+        executor:   NewTaskExecutor(repo, NewNextRunCalculator(), config.WorkerCount),
+        ticker:     time.NewTicker(config.CheckInterval),
+        stopChan:   make(chan struct{}),
+        interval:   config.CheckInterval,
+    }
+}
+
+func NewTaskExecutor(repo taskdomain.Repository, calculator taskdomain.NextRunCalculator, workerCount int) *TaskExecutor {
+    return &TaskExecutor{
+        workerCount: workerCount,
+        taskQueue:   make(chan taskdomain.Task, 100),
+        repo:        repo,
+        calculator:  calculator,
+    }
+}
+
+func (s *TaskScheduler) Start(ctx context.Context) error {
+    log.Println("Task scheduler starting...")
+
+    if err := s.InitializeNextRunTimes(ctx); err != nil {
+        log.Printf("Warning: failed to initialize next run times: %v", err)
+    }
+
+    s.executor.Start(ctx)
+    
+    s.wg.Add(1)
+    go s.ScheduleLoop(ctx)
+
+    return nil
+}
+
+func (s *TaskScheduler) Stop() {
+    log.Println("Stopping task scheduler...")
+    s.ticker.Stop()
+    close(s.stopChan)
+    s.wg.Wait()
+    s.executor.Stop()
+    log.Println("Task scheduler stopped")
+}
+
+func (s *TaskScheduler) ScheduleTask(ctx context.Context, task taskdomain.Task) (*taskdomain.Task, error) {
+    nextRun, err := s.calculator.Calculate(task, time.Now())
+    if err != nil {
+        return nil, err
+    }
+    
+    return s.repo.UpdateNextRunTime(ctx, task.ID, nextRun)
+}
+
+func (s *TaskScheduler) UnscheduleTask(ctx context.Context, taskID int64) error {
+    return nil
+}
+
+func (s *TaskScheduler) InitializeNextRunTimes(ctx context.Context) error {
+    tasks, err := s.repo.GetTasksForExecution(ctx)
+    if err != nil {
+        return err
+    }
+
+    for _, task := range tasks {
+        if task.NextRunTime.IsZero() {
+            nextRun, err := s.calculator.Calculate(task, time.Now())
+            if err != nil {
+                log.Printf("Failed to calculate next run for task %d: %v", task.ID, err)
+                continue
+            }
+            if _, err := s.repo.UpdateNextRunTime(ctx, task.ID, nextRun); err != nil {
+                log.Printf("Failed to update next run time for task %d: %v", task.ID, err)
+            }
+        }
+    }
+
+    return nil
+}
+
+func (s *TaskScheduler) ScheduleLoop(ctx context.Context) {
+    defer s.wg.Done()
+
+    for {
+        select {
+        case <-s.ticker.C:
+            s.CheckAndScheduleTasks(ctx)
+        case <-s.stopChan:
+            return
+        case <-ctx.Done():
+            return
+        }
+    }
+}
+
+func (s *TaskScheduler) CheckAndScheduleTasks(ctx context.Context) {
+    tasks, err := s.repo.GetTasksForExecution(ctx)
+    if err != nil {
+        log.Printf("Error getting tasks for execution: %v", err)
+        return
+    }
+
+    for _, task := range tasks {
+        select {
+        case s.executor.taskQueue <- task:
+        default:
+            log.Printf("Task queue is full, dropping task %d", task.ID)
+        }
+    }
+}
+
+func (e *TaskExecutor) Start(ctx context.Context) {
+    for i := 0; i < e.workerCount; i++ {
+        e.wg.Add(1)
+        go e.Worker(ctx, i)
+    }
+}
+
+func (e *TaskExecutor) Worker(ctx context.Context, workerID int) {
+    defer e.wg.Done()
+
+    for {
+        select {
+        case task, ok := <-e.taskQueue:
+            if !ok {
+                return
+            }
+            e.ExecuteTask(ctx, task, workerID)
+        case <-ctx.Done():
+            return
+        }
+    }
+}
+
+func (e *TaskExecutor) ExecuteTask(ctx context.Context, task taskdomain.Task, workerID int) {
+    log.Printf("[Worker %d] Executing task: %s (ID: %d, Status: %s)",
+        workerID, task.Title, task.ID, task.Status)
+
+    nextRun, err := e.calculator.Calculate(task, task.NextRunTime)
+    if err != nil {
+        log.Printf("[Worker %d] Failed to calculate next run time for task %d: %v", workerID, task.ID, err)
+        return
+    }
+    
+    updatedTask, err := e.repo.UpdateNextRunTime(ctx, task.ID, nextRun)
+    if err != nil {
+        log.Printf("[Worker %d] Failed to update next run time for task %d: %v", workerID, task.ID, err)
+        return
+    }
+    
+    log.Printf("[Worker %d] Task %s completed. Next run scheduled at: %v", 
+        workerID, task.Title, updatedTask.NextRunTime)
+}
+
+func (e *TaskExecutor) Stop() {
+    close(e.taskQueue)
+    e.wg.Wait()
+}
+
+================================================================================
+📁 ПАПКА: alneremin/internal\repository/
+================================================================================
+
+================================================================================
+📁 ПАПКА: alneremin/internal\repository\postgres/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\repository\postgres\task_repository.go
+Размер: 4,832 байт
+────────────────────────────────────────────────────────────────────────────────
+package postgres
+
+import (
+	"context"
+	"errors"
+	"time"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type Repository struct {
+	pool *pgxpool.Pool
+}
+
+func New(pool *pgxpool.Pool) *Repository {
+	return &Repository{pool: pool}
+}
+
+func (r *Repository) Create(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error) {
+	const query = `
+		INSERT INTO tasks (title, description, status, frequency, next_run_time, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id, title, description, status, frequency, next_run_time, created_at, updated_at
+	`
+
+	row := r.pool.QueryRow(ctx, query, task.Title, task.Description, task.Status, task.Frequency, task.NextRunTime, task.CreatedAt, task.UpdatedAt)
+	created, err := scanTask(row)
+	if err != nil {
+		return nil, err
+	}
+
+	return created, nil
+}
+
+func (r *Repository) GetByID(ctx context.Context, id int64) (*taskdomain.Task, error) {
+	const query = `
+		SELECT id, title, description, status, frequency, next_run_time, created_at, updated_at
+		FROM tasks
+		WHERE id = $1
+	`
+
+	row := r.pool.QueryRow(ctx, query, id)
+	found, err := scanTask(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, taskdomain.ErrNotFound
+		}
+
+		return nil, err
+	}
+
+	return found, nil
+}
+
+func (r *Repository) Update(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error) {
+	const query = `
+		UPDATE tasks
+		SET title = $1,
+			description = $2,
+			status = $3,
+			frequency = $4,
+			next_run_time = $5,
+			updated_at = $6
+		WHERE id = $7
+		RETURNING id, title, description, status, frequency, next_run_time, created_at, updated_at
+	`
+
+	row := r.pool.QueryRow(ctx, query, task.Title, task.Description, task.Status, task.Frequency, task.NextRunTime, task.UpdatedAt, task.ID)
+	updated, err := scanTask(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, taskdomain.ErrNotFound
+		}
+
+		return nil, err
+	}
+
+	return updated, nil
+}
+
+func (r *Repository) Delete(ctx context.Context, id int64) error {
+	const query = `DELETE FROM tasks WHERE id = $1`
+
+	result, err := r.pool.Exec(ctx, query, id)
+	if err != nil {
+		return err
+	}
+
+	if result.RowsAffected() == 0 {
+		return taskdomain.ErrNotFound
+	}
+
+	return nil
+}
+
+func (r *Repository) List(ctx context.Context) ([]taskdomain.Task, error) {
+	const query = `
+		SELECT id, title, description, status, frequency, next_run_time, created_at, updated_at
+		FROM tasks
+		ORDER BY id DESC
+	`
+
+	rows, err := r.pool.Query(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	tasks := make([]taskdomain.Task, 0)
+	for rows.Next() {
+		task, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+
+		tasks = append(tasks, *task)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return tasks, nil
+}
+
+type taskScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanTask(scanner taskScanner) (*taskdomain.Task, error) {
+	var (
+		task   taskdomain.Task
+		status string
+	)
+
+	if err := scanner.Scan(
+		&task.ID,
+		&task.Title,
+		&task.Description,
+		&status,
+		&task.Frequency,
+		&task.NextRunTime,
+		&task.CreatedAt,
+		&task.UpdatedAt,
+	); err != nil {
+		return nil, err
+	}
+
+	task.Status = taskdomain.Status(status)
+
+	return &task, nil
+}
+
+func (r *Repository) GetTasksForExecution(ctx context.Context) ([]taskdomain.Task, error) {
+    query := `
+        SELECT id, title, description, status, frequency, next_run_time, created_at, updated_at
+        FROM tasks 
+		WHERE (next_run_time IS NULL OR next_run_time <= NOW())
+		AND frequency::jsonb IS NOT NULL
+		AND frequency::jsonb != '{}'::jsonb
+		AND frequency->>'type' IS NOT NULL
+		AND frequency->>'type' != '';
+	`
+
+	rows, err := r.pool.Query(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	tasks := make([]taskdomain.Task, 0)
+	for rows.Next() {
+		task, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+
+		tasks = append(tasks, *task)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return tasks, nil
+}
+
+func (r *Repository) UpdateNextRunTime(ctx context.Context, id int64, nextRun time.Time) (*taskdomain.Task, error) {
+    query := `
+		UPDATE tasks 
+		SET next_run_time = $1, 
+			updated_at = NOW(),
+			status = $2
+		WHERE id = $3
+		RETURNING id, title, description, status, frequency, next_run_time, created_at, updated_at
+	`
+    row := r.pool.QueryRow(ctx, query, nextRun, taskdomain.StatusNew, id)
+	updated, err := scanTask(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, taskdomain.ErrNotFound
+		}
+
+		return nil, err
+	}
+
+	return updated, nil
+}
+
+================================================================================
+📁 ПАПКА: alneremin/internal\transport/
+================================================================================
+
+================================================================================
+📁 ПАПКА: alneremin/internal\transport\http/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\router.go
+Размер: 1,099 байт
+────────────────────────────────────────────────────────────────────────────────
+package transporthttp
+
+import (
+	"net/http"
+
+	"github.com/gorilla/mux"
+
+	swaggerdocs "example.com/taskservice/internal/transport/http/docs"
+	httphandlers "example.com/taskservice/internal/transport/http/handlers"
+)
+
+func NewRouter(taskHandler *httphandlers.TaskHandler, docsHandler *swaggerdocs.Handler) *mux.Router {
+	router := mux.NewRouter().StrictSlash(true)
+
+	router.HandleFunc("/swagger/openapi.json", docsHandler.ServeSpec).Methods(http.MethodGet)
+	router.HandleFunc("/swagger/", docsHandler.ServeUI).Methods(http.MethodGet)
+	router.HandleFunc("/swagger", docsHandler.RedirectToUI).Methods(http.MethodGet)
+
+	api := router.PathPrefix("/api/v1").Subrouter()
+
+	api.HandleFunc("/tasks", taskHandler.Create).Methods(http.MethodPost)
+	api.HandleFunc("/tasks", taskHandler.List).Methods(http.MethodGet)
+	api.HandleFunc("/tasks/{id:[0-9]+}", taskHandler.GetByID).Methods(http.MethodGet)
+	api.HandleFunc("/tasks/{id:[0-9]+}", taskHandler.Update).Methods(http.MethodPut)
+	api.HandleFunc("/tasks/{id:[0-9]+}", taskHandler.Delete).Methods(http.MethodDelete)
+
+	return router
+}
+
+
+================================================================================
+📁 ПАПКА: alneremin/internal\transport\http\docs/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\docs\handler.go
+Размер: 1,779 байт
+────────────────────────────────────────────────────────────────────────────────
+package docs
+
+import (
+	"embed"
+	"net/http"
+)
+
+//go:embed openapi.json
+var openAPISpec embed.FS
+
+type Handler struct {
+	spec []byte
+}
+
+func NewHandler() *Handler {
+	spec, err := openAPISpec.ReadFile("openapi.json")
+	if err != nil {
+		panic(err)
+	}
+
+	return &Handler{spec: spec}
+}
+
+func (h *Handler) ServeSpec(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+
+	_, _ = w.Write(h.spec)
+}
+
+func (h *Handler) ServeUI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+
+	_, _ = w.Write([]byte(swaggerUIHTML))
+}
+
+func (h *Handler) RedirectToUI(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "/swagger/", http.StatusMovedPermanently)
+}
+
+var swaggerUIHTML = []byte(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Task Service Swagger</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+  <style>
+    body { margin: 0; background: #f6f7fb; }
+    #swagger-ui { max-width: 1440px; margin: 0 auto; }
+  </style>
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js" crossorigin></script>
+  <script>
+    window.onload = function() {
+      window.ui = SwaggerUIBundle({
+        url: '/swagger/openapi.json',
+        dom_id: '#swagger-ui',
+        deepLinking: true,
+        presets: [SwaggerUIBundle.presets.apis],
+        layout: 'BaseLayout'
+      });
+    };
+  </script>
+</body>
+</html>`)
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\docs\openapi.json
+Размер: 8,178 байт
+────────────────────────────────────────────────────────────────────────────────
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Task Service API",
+    "version": "1.0.0",
+    "description": "CRUD API for tasks built with clean architecture."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8080"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Tasks",
+      "description": "Operations with tasks"
+    }
+  ],
+  "paths": {
+    "/api/v1/tasks": {
+      "get": {
+        "tags": ["Tasks"],
+        "summary": "List tasks",
+        "responses": {
+          "200": {
+            "description": "Task list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/Task" }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["Tasks"],
+        "summary": "Create task",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateTaskRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created task",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Task" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/api/v1/tasks/{id}": {
+      "get": {
+        "tags": ["Tasks"],
+        "summary": "Get task by ID",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Task",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Task" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "put": {
+        "tags": ["Tasks"],
+        "summary": "Update task",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/UpdateTaskRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated task",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Task" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["Tasks"],
+        "summary": "Delete task",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "responses": {
+          "204": { "description": "Deleted" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    }
+  },
+  "components": {
+    "responses": {
+      "BadRequest": {
+        "description": "Bad request",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Resource not found",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "CreateTaskRequest": {
+        "type": "object",
+        "required": ["title"],
+        "properties": {
+          "title": {
+            "type": "string",
+            "example": "Prepare release"
+          },
+          "description": {
+            "type": "string",
+            "example": "Collect release notes and check migrations"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["new", "in_progress", "done"],
+            "example": "new"
+          },
+          "frequency": {
+            "type": "object",
+            "required": [],
+            "properties": {
+              "type": {
+                "type": "string",
+                "example": "daily"
+              },
+              "daily": {
+                "type": "object",
+                "required": ["interval"],
+                "properties": {
+                  "interval": { "type": "integer", "example": 1 },
+                  "hour": { "type": "integer", "example": 1 },
+                  "minute": { "type": "integer", "example": 1 }
+                }
+              }
+            }
+          }
+        }
+      },
+      "UpdateTaskRequest": {
+        "type": "object",
+        "required": ["title", "status"],
+        "properties": {
+          "title": {
+            "type": "string",
+            "example": "Prepare release"
+          },
+          "description": {
+            "type": "string",
+            "example": "Collect release notes and check migrations"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["new", "in_progress", "done"],
+            "example": "in_progress"
+          },
+          "frequency": {
+            "type": "object",
+            "required": [],
+            "properties": {
+              "type": {
+                "type": "string",
+                "example": "daily"
+              },
+              "daily": {
+                "type": "object",
+                "required": ["interval"],
+                "properties": {
+                  "interval": { "type": "integer", "example": 1 },
+                  "hour": { "type": "integer", "example": 1 },
+                  "minute": { "type": "integer", "example": 1 }
+                }
+              }
+            }
+          }
+        }
+      },
+      "Task": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "format": "int64", "example": 1 },
+          "title": { "type": "string", "example": "Prepare release" },
+          "description": {
+            "type": "string",
+            "example": "Collect release notes and check migrations"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["new", "in_progress", "done"],
+            "example": "new"
+          },
+          "frequency": {
+            "type": "object",
+            "properties": {
+              "type": { "type": "string", "example": "daily" },
+              "daily": {
+                "type": "object",
+                "required": ["interval"],
+                "properties": {
+                  "interval": { "type": "integer", "example": 1 },
+                  "hour": { "type": "integer", "example": 1 },
+                  "minute": { "type": "integer", "example": 1 }
+                }
+              }
+            }
+          },
+          "next_run_time": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-03-24T00:00:00Z"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-03-24T00:00:00Z"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-03-24T00:00:00Z"
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": { "type": "string", "example": "task not found" }
+        }
+      }
+    }
+  }
+}
+
+
+================================================================================
+📁 ПАПКА: alneremin/internal\transport\http\handlers/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\handlers\dto.go
+Размер: 1,131 байт
+────────────────────────────────────────────────────────────────────────────────
+package handlers
+
+import (
+	"time"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type taskMutationDTO struct {
+	Title       string            			`json:"title"`
+	Description string           		 	`json:"description"`
+	Status      taskdomain.Status 			`json:"status"`
+	Frequency   taskdomain.FrequencyRule 	`json:"frequency"`
+}
+
+type taskDTO struct {
+	ID          int64           		 	`json:"id"`
+	Title       string           		 	`json:"title"`
+	Description string          		 	`json:"description"`
+	Status      taskdomain.Status 			`json:"status"`
+	Frequency   taskdomain.FrequencyRule 	`json:"frequency"`
+	NextRunTime time.Time   				`json:"next_run_time"`
+	CreatedAt   time.Time         			`json:"created_at"`
+	UpdatedAt   time.Time        		 	`json:"updated_at"`
+}
+
+func newTaskDTO(task *taskdomain.Task) taskDTO {
+	return taskDTO{
+		ID:          task.ID,
+		Title:       task.Title,
+		Description: task.Description,
+		Status:      task.Status,
+		Frequency:   task.Frequency,
+		NextRunTime: task.NextRunTime,
+		CreatedAt:   task.CreatedAt,
+		UpdatedAt:   task.UpdatedAt,
+	}
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\handlers\task_handler.go
+Размер: 3,766 байт
+────────────────────────────────────────────────────────────────────────────────
+package handlers
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strconv"
+
+	"github.com/gorilla/mux"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type TaskHandler struct {
+	usecase taskdomain.Usecase
+}
+
+func NewTaskHandler(usecase taskdomain.Usecase) *TaskHandler {
+	return &TaskHandler{usecase: usecase}
+}
+
+func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
+	var req taskMutationDTO
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	created, err := h.usecase.Create(r.Context(), taskdomain.CreateInput{
+		Title:       req.Title,
+		Description: req.Description,
+		Status:      req.Status,
+		Frequency:	 req.Frequency,
+	})
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, newTaskDTO(created))
+}
+
+func (h *TaskHandler) GetByID(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	task, err := h.usecase.GetByID(r.Context(), id)
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, newTaskDTO(task))
+}
+
+func (h *TaskHandler) Update(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	var req taskMutationDTO
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	updated, err := h.usecase.Update(r.Context(), id, taskdomain.UpdateInput{
+		Title:       req.Title,
+		Description: req.Description,
+		Status:      req.Status,
+		Frequency:	 req.Frequency,
+	})
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, newTaskDTO(updated))
+}
+
+func (h *TaskHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	if err := h.usecase.Delete(r.Context(), id); err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
+	tasks, err := h.usecase.List(r.Context())
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	response := make([]taskDTO, 0, len(tasks))
+	for i := range tasks {
+		response = append(response, newTaskDTO(&tasks[i]))
+	}
+
+	writeJSON(w, http.StatusOK, response)
+}
+
+func getIDFromRequest(r *http.Request) (int64, error) {
+	rawID := mux.Vars(r)["id"]
+	if rawID == "" {
+		return 0, errors.New("missing task id")
+	}
+
+	id, err := strconv.ParseInt(rawID, 10, 64)
+	if err != nil {
+		return 0, errors.New("invalid task id")
+	}
+
+	if id <= 0 {
+		return 0, errors.New("invalid task id")
+	}
+
+	return id, nil
+}
+
+func decodeJSON(r *http.Request, dst any) error {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+
+	if err := decoder.Decode(dst); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func writeUsecaseError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, taskdomain.ErrNotFound):
+		writeError(w, http.StatusNotFound, err)
+	case errors.Is(err, taskdomain.ErrInvalidInput):
+		writeError(w, http.StatusBadRequest, err)
+	default:
+		writeError(w, http.StatusInternalServerError, err)
+	}
+}
+
+func writeError(w http.ResponseWriter, status int, err error) {
+	writeJSON(w, status, map[string]string{
+		"error": err.Error(),
+	})
+}
+
+func writeJSON(w http.ResponseWriter, status int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+
+================================================================================
+📁 ПАПКА: alneremin/internal\usecase/
+================================================================================
+
+================================================================================
+📁 ПАПКА: alneremin/internal\usecase\task/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\task\errors.go
+Размер: 203 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import "errors"
+
+var ErrTitleIsEmpty = errors.New("title is required")
+var ErrInvalidStatus = errors.New("invalid status")
+var ErrIdMustBetPositive = errors.New("id must be positive")
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\task\service.go
+Размер: 2,681 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import (
+	"context"
+	"fmt"
+	"time"
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type Service struct {
+	repo 		taskdomain.Repository
+	scheduler  	taskdomain.Scheduler
+	calculator  taskdomain.NextRunCalculator
+	now  func() time.Time
+}
+
+func NewService(repo taskdomain.Repository, scheduler taskdomain.Scheduler, calculator taskdomain.NextRunCalculator) *Service {
+	return &Service{
+		repo: repo,
+		scheduler: scheduler,
+		calculator: calculator,
+		now:  func() time.Time { return time.Now().UTC() },
+	}
+}
+
+func (s *Service) Create(ctx context.Context, input taskdomain.CreateInput) (*taskdomain.Task, error) {
+	normalized, err := validateCreateInput(input)
+	if err != nil {
+		return nil, err
+	}
+
+	model := &taskdomain.Task{
+		Title:       normalized.Title,
+		Description: normalized.Description,
+		Status:      normalized.Status,
+		Frequency:   normalized.Frequency,
+	}
+	now := s.now()
+	if !normalized.Frequency.IsEmpty() {
+		next_time, err := s.calculator.Calculate(*model, now)
+		if err != nil {
+			return nil, err
+		}
+		model.NextRunTime = next_time
+	}
+
+	model.CreatedAt = now
+	model.UpdatedAt = now
+
+	created, err := s.repo.Create(ctx, model)
+	if err != nil {
+		return nil, err
+	}
+
+	return created, nil
+}
+
+func (s *Service) GetByID(ctx context.Context, id int64) (*taskdomain.Task, error) {
+	if id <= 0 {
+		return nil, fmt.Errorf("%w: %w", taskdomain.ErrInvalidInput, ErrIdMustBetPositive)
+	}
+
+	return s.repo.GetByID(ctx, id)
+}
+
+func (s *Service) Update(ctx context.Context, id int64, input taskdomain.UpdateInput) (*taskdomain.Task, error) {
+	if id <= 0 {
+		return nil, fmt.Errorf("%w: %w", taskdomain.ErrInvalidInput, ErrIdMustBetPositive)
+	}
+
+	normalized, err := validateUpdateInput(input)
+	if err != nil {
+		return nil, err
+	}
+
+	model := &taskdomain.Task{
+		ID:          id,
+		Title:       normalized.Title,
+		Description: normalized.Description,
+		Status:      normalized.Status,
+		Frequency:   normalized.Frequency,
+	}
+	now := s.now()
+	if !normalized.Frequency.IsEmpty() {
+		next_time, err := s.calculator.Calculate(*model, now)
+		if err != nil {
+			return nil, err
+		}
+		model.NextRunTime = next_time
+	}
+	model.UpdatedAt = now
+
+	updated, err := s.repo.Update(ctx, model)
+	if err != nil {
+		return nil, err
+	}
+
+	return updated, nil
+}
+
+func (s *Service) Delete(ctx context.Context, id int64) error {
+	if id <= 0 {
+		return fmt.Errorf("%w: %w", taskdomain.ErrInvalidInput, ErrIdMustBetPositive)
+	}
+
+	return s.repo.Delete(ctx, id)
+}
+
+func (s *Service) List(ctx context.Context) ([]taskdomain.Task, error) {
+	return s.repo.List(ctx)
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\task\validators.go
+Размер: 1,504 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import (
+	"fmt"
+	"strings"
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+func validateCreateInput(input taskdomain.CreateInput) (taskdomain.CreateInput, error) {
+	input.Title = strings.TrimSpace(input.Title)
+	input.Description = strings.TrimSpace(input.Description)
+
+	if input.Title == "" {
+		return taskdomain.CreateInput{}, fmt.Errorf("%w: %w", taskdomain.ErrInvalidInput, ErrTitleIsEmpty)
+	}
+
+	if input.Status == "" {
+		input.Status = taskdomain.StatusNew
+	}
+
+	if !input.Status.Valid() {
+		return taskdomain.CreateInput{}, fmt.Errorf("%w: %w", taskdomain.ErrInvalidInput, ErrInvalidStatus)
+	}
+
+	if isValid, errMsg := input.Frequency.Valid(); !isValid {
+        return taskdomain.CreateInput{}, fmt.Errorf("%w: %w", taskdomain.ErrInvalidInput, errMsg)
+    }
+
+	return input, nil
+}
+
+func validateUpdateInput(input taskdomain.UpdateInput) (taskdomain.UpdateInput, error) {
+	input.Title = strings.TrimSpace(input.Title)
+	input.Description = strings.TrimSpace(input.Description)
+
+	if input.Title == "" {
+		return taskdomain.UpdateInput{}, fmt.Errorf("%w: %w", taskdomain.ErrInvalidInput, ErrTitleIsEmpty)
+	}
+
+	if !input.Status.Valid() {
+		return taskdomain.UpdateInput{}, fmt.Errorf("%w: %w", taskdomain.ErrInvalidInput, ErrInvalidStatus)
+	}
+
+	if isValid, errMsg := input.Frequency.Valid(); !isValid {
+        return taskdomain.UpdateInput{}, fmt.Errorf("%w: %w", taskdomain.ErrInvalidInput, errMsg)
+    }
+
+	return input, nil
+}
+
+
+================================================================================
+📁 ПАПКА: alneremin/migrations/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: migrations\0001_create_tasks.up.sql
+Размер: 318 байт
+────────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS tasks (
+	id BIGSERIAL PRIMARY KEY,
+	title TEXT NOT NULL,
+	description TEXT NOT NULL DEFAULT '',
+	status TEXT NOT NULL,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks (status);
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: migrations\0002_add_frequency_to_tasks.up.sql
+Размер: 550 байт
+────────────────────────────────────────────────────────────────────────────────
+ALTER TABLE tasks 
+    ADD COLUMN IF NOT EXISTS frequency JSONB,
+    ADD COLUMN IF NOT EXISTS next_run_time TIMESTAMPTZ NOT NULL DEFAULT '1970-01-01 00:00:00+00';
+
+
+COMMENT ON COLUMN tasks.frequency IS 'JSONB поле с правилами периодичности задачи.';
+COMMENT ON COLUMN tasks.next_run_time IS 'Время следующего запуска задачи';
+
+CREATE INDEX IF NOT EXISTS idx_tasks_frequency ON tasks USING GIN(frequency);
+CREATE INDEX IF NOT EXISTS idx_tasks_next_run_time ON tasks(next_run_time);
+
+================================================================================
+СТАТИСТИКА ЭКСПОРТА
+================================================================================
+Всего обработано файлов: 30
+Всего пропущено файлов: 2
+Общий размер выходного файла: 94,455 байт

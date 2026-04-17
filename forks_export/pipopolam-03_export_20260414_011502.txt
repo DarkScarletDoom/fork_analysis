@@ -1,0 +1,2196 @@
+================================================================================
+ЭКСПОРТ РЕПОЗИТОРИЯ: pipopolam-03
+Путь: C:\Users\vladk\Desktop\test\forks\pipopolam-03
+Дата экспорта: 2026-04-14 01:15:02
+================================================================================
+
+
+================================================================================
+📁 ПАПКА: pipopolam-03/
+================================================================================
+
+[ПРОПУЩЕН] .dockerignore (бинарный/служебный/слишком большой)
+
+[ПРОПУЩЕН] .gitignore (бинарный/служебный/слишком большой)
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: Dockerfile
+Размер: 414 байт
+────────────────────────────────────────────────────────────────────────────────
+FROM golang:1.23.0-alpine AS builder
+
+WORKDIR /src
+
+RUN apk add --no-cache ca-certificates
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/taskservice ./cmd/api
+
+FROM alpine:3.21
+
+WORKDIR /app
+
+RUN apk add --no-cache ca-certificates
+
+COPY --from=builder /out/taskservice /app/taskservice
+
+EXPOSE 8080
+
+CMD ["/app/taskservice"]
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: README.md
+Размер: 4,347 байт
+────────────────────────────────────────────────────────────────────────────────
+# Task Service
+
+Сервис для управления задачами с HTTP API на Go.
+
+## Требования
+
+- Go `1.23+`
+- Docker и Docker Compose
+
+## Быстрый запуск через Docker Compose
+
+```bash
+docker compose up --build
+```
+
+После запуска сервис будет доступен по адресу `http://localhost:8080`.
+
+Если `postgres` уже запускался ранее со старой схемой, пересоздай volume:
+
+```bash
+docker compose down -v
+docker compose up --build
+```
+
+Причина в том, что SQL-файл из migrations/0001_create_tasks.up.sql монтируется в docker-entrypoint-initdb.d и применяется только при инициализации пустого data volume. (добавлен файл 0002_add_task_recurrence.up.sql для примеров с периодичностью) 
+
+## Swagger
+
+Swagger UI:
+
+```text
+http://localhost:8080/swagger/
+```
+
+OpenAPI JSON: (обновлен с примерами запросов для периодичных задач)
+
+```text
+http://localhost:8080/swagger/openapi.json
+```
+
+## API
+
+Базовый префикс API:
+
+```text
+/api/v1
+```
+
+Основные маршруты:
+
+- `POST /api/v1/tasks`
+- `GET /api/v1/tasks`
+- `GET /api/v1/tasks/{id}`
+- `PUT /api/v1/tasks/{id}`
+- `DELETE /api/v1/tasks/{id}`
+
+## Добавлено: периодичность задач
+
+Поддерживаемые типы:
+
+- `none` — без расписания;
+- `daily` — каждый `interval_days` день (`interval_days >= 1`)
+- `monthly` — в `day_of_month` число месяца (`1..30`)
+- `parity` — только четные/нечетные дни месяца (`is_even=true|false`)
+- `dates` — только в даты из `specific_dates` (формат `YYYY-MM-DD`)
+
+### Обязательные для каждого типа
+
+- `none`: -
+- `daily`: `interval_days`
+- `monthly`: `day_of_month`
+- `parity`: `is_even`
+- `dates`: not nil `specific_dates`
+
+## Вычисление следующего дня активности задачи (`next_run_at`)
+
+Используем UTC и начало суток (`00:00:00Z`) для расчета очередного запуска:
+
+- `none`: `next_run_at = nil`
+- `daily`: `next_run_at = today_utc + interval_days`
+- `monthly`: ближайшая дата с указанным числом месяца (текущий или следующий месяц)
+- `parity`: ближайший день с нужной четностью (включая сегодня)
+- `dates`: ближайшая дата из `specific_dates`, которая не раньше текущего дня UTC
+
+## Граничные случаи
+
+- Пустой/невалидный `interval_type`
+  - пустой трактуется как `nil`
+  - невалидный → `400`
+- Для `daily/monthly/parity/dates` отсутствие обязательного поля - `400`
+- Для `dates`:
+  - пустые строки в массиве отбрасываются
+  - даты нормализуются к `YYYY-MM-DD`
+  - дубликаты удаляются
+  - если все даты в прошлом — `400`
+- Для `monthly` если задача стоит на 31 число, в следующем месяце она будет поставлена на 30-е (в случае февраля на 28/29), в случае июль->август где оба месяца есть 31 число, задача останется 31-го
+
+## Ограничения
+
+- Расчет дат в UTC
+
+## Особенности
+
+- Задачи продлеваются два раза в день - в 6 и 18 часов с помощью планировщика (запускается как горутина в main)
+- Даты для `specific_dates` принимаем в формате `YYYY-MM-DD`
+- Для четности считаем, что `is_even=true` означает запуск по четным числам месяца, `false` — по нечетным
+- Для `none` любые дополнительные поля периодичности игнорируем
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: docker-compose.yml
+Размер: 800 байт
+────────────────────────────────────────────────────────────────────────────────
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: taskservice
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d taskservice"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      HTTP_ADDR: :8080
+      DATABASE_DSN: postgres://postgres:postgres@postgres:5432/taskservice?sslmode=disable
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: go.mod
+Размер: 441 байт
+────────────────────────────────────────────────────────────────────────────────
+module example.com/taskservice
+
+go 1.23.0
+
+require (
+	github.com/gorilla/mux v1.8.1
+	github.com/jackc/pgx/v5 v5.7.6
+)
+
+require (
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
+	golang.org/x/crypto v0.37.0 // indirect
+	golang.org/x/sync v0.13.0 // indirect
+	golang.org/x/text v0.24.0 // indirect
+)
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: go.sum
+Размер: 2,649 байт
+────────────────────────────────────────────────────────────────────────────────
+github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
+github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/gorilla/mux v1.8.1 h1:TuBL49tXwgrFYWhqrNgrUNEY92u81SPhu7sTdzQEiWY=
+github.com/gorilla/mux v1.8.1/go.mod h1:AKf9I4AEqPTmMytcMc0KkNouC66V3BtZ4qD5fmWSiMQ=
+github.com/jackc/pgpassfile v1.0.0 h1:/6Hmqy13Ss2zCq62VdNG8tM1wchn8zjSGOBJ6icpsIM=
+github.com/jackc/pgpassfile v1.0.0/go.mod h1:CEx0iS5ambNFdcRtxPj5JhEz+xB6uRky5eyVu/W2HEg=
+github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 h1:iCEnooe7UlwOQYpKFhBabPMi4aNAfoODPEFNiAnClxo=
+github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761/go.mod h1:5TJZWKEWniPve33vlWYSoGYefn3gLQRzjfDlhSJ9ZKM=
+github.com/jackc/pgx/v5 v5.7.6 h1:rWQc5FwZSPX58r1OQmkuaNicxdmExaEz5A2DO2hUuTk=
+github.com/jackc/pgx/v5 v5.7.6/go.mod h1:aruU7o91Tc2q2cFp5h4uP3f6ztExVpyVv88Xl/8Vl8M=
+github.com/jackc/puddle/v2 v2.2.2 h1:PR8nw+E/1w0GLuRFSmiioY6UooMp6KJv0/61nB7icHo=
+github.com/jackc/puddle/v2 v2.2.2/go.mod h1:vriiEXHvEE654aYKXXjOvZM39qJ0q+azkZFrfEOc3H4=
+github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
+github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
+github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
+github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UVUgZn+9EI=
+github.com/stretchr/testify v1.7.0/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
+github.com/stretchr/testify v1.8.1 h1:w7B6lhMri9wdJUVmEZPGGhZzrYTPvgJArz7wNPgYKsk=
+github.com/stretchr/testify v1.8.1/go.mod h1:w2LPCIKwWwSfY2zedu0+kehJoqGctiVI29o6fzry7u4=
+golang.org/x/crypto v0.37.0 h1:kJNSjF/Xp7kU0iB2Z+9viTPMW4EqqsrywMXLJOOsXSE=
+golang.org/x/crypto v0.37.0/go.mod h1:vg+k43peMZ0pUMhYmVAWysMK35e6ioLh3wB8ZCAfbVc=
+golang.org/x/sync v0.13.0 h1:AauUjRAJ9OSnvULf/ARrrVywoJDy0YS2AwQ98I37610=
+golang.org/x/sync v0.13.0/go.mod h1:1dzgHSNfp02xaA81J2MS99Qcpr2w7fw1gpm99rleRqA=
+golang.org/x/text v0.24.0 h1:dd5Bzh4yt5KYA8f9CJHCP4FB4D51c2c6JvN37xJJkJ0=
+golang.org/x/text v0.24.0/go.mod h1:L8rBsPeo2pSS+xqN0d5u2ikmjtmoJbDBT1b7nHvFCdU=
+gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
+gopkg.in/yaml.v3 v3.0.0-20200313102051-9f266ea9e77c/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
+gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+
+
+================================================================================
+📁 ПАПКА: pipopolam-03/cmd/
+================================================================================
+
+================================================================================
+📁 ПАПКА: pipopolam-03/cmd\api/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: cmd\api\main.go
+Размер: 2,431 байт
+────────────────────────────────────────────────────────────────────────────────
+package main
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	infrastructurepostgres "example.com/taskservice/internal/infrastructure/postgres"
+	postgresrepo "example.com/taskservice/internal/repository/postgres"
+	transporthttp "example.com/taskservice/internal/transport/http"
+	swaggerdocs "example.com/taskservice/internal/transport/http/docs"
+	httphandlers "example.com/taskservice/internal/transport/http/handlers"
+	"example.com/taskservice/internal/usecase/task"
+)
+
+func main() {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
+
+	cfg := loadConfig()
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	pool, err := infrastructurepostgres.Open(ctx, cfg.DatabaseDSN)
+	if err != nil {
+		logger.Error("open postgres", "error", err)
+		os.Exit(1)
+	}
+	defer pool.Close()
+
+	taskRepo := postgresrepo.New(pool)
+	taskUsecase := task.NewService(taskRepo)
+	// Включение планировщика
+	taskUsecase.StartScheduler(ctx)
+	taskHandler := httphandlers.NewTaskHandler(taskUsecase)
+	docsHandler := swaggerdocs.NewHandler()
+	router := transporthttp.NewRouter(taskHandler, docsHandler)
+
+	server := &http.Server{
+		Addr:              cfg.HTTPAddr,
+		Handler:           router,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	go func() {
+		<-ctx.Done()
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			logger.Error("shutdown http server", "error", err)
+		}
+	}()
+
+	logger.Info("http server started", "addr", cfg.HTTPAddr)
+
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		logger.Error("listen and serve", "error", err)
+		os.Exit(1)
+	}
+}
+
+type config struct {
+	HTTPAddr    string
+	DatabaseDSN string
+}
+
+func loadConfig() config {
+	cfg := config{
+		HTTPAddr:    envOrDefault("HTTP_ADDR", ":8080"),
+		DatabaseDSN: envOrDefault("DATABASE_DSN", "postgres://postgres:postgres@localhost:5432/taskservice?sslmode=disable"),
+	}
+
+	if cfg.DatabaseDSN == "" {
+		panic(fmt.Errorf("DATABASE_DSN is required"))
+	}
+
+	return cfg
+}
+
+func envOrDefault(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+
+	return fallback
+}
+
+
+================================================================================
+📁 ПАПКА: pipopolam-03/internal/
+================================================================================
+
+================================================================================
+📁 ПАПКА: pipopolam-03/internal\domain/
+================================================================================
+
+================================================================================
+📁 ПАПКА: pipopolam-03/internal\domain\task/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\domain\task\errors.go
+Размер: 83 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import "errors"
+
+var ErrNotFound = errors.New("task not found")
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\domain\task\task.go
+Размер: 1,394 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import "time"
+
+type Status string
+
+type IntervalType string
+
+const (
+	StatusNew        Status = "new"
+	StatusInProgress Status = "in_progress"
+	StatusDone       Status = "done"
+)
+
+const (
+	IntervalNone     IntervalType = "none"
+	IntervalDaily    IntervalType = "daily"
+	IntervalMonthly  IntervalType = "monthly"
+	IntervalParity   IntervalType = "parity"
+	IntervalSpecific IntervalType = "dates"
+)
+
+type Task struct {
+	ID          int64     `json:"id"`
+	Title       string    `json:"title"`
+	Description string    `json:"description"`
+	Status      Status    `json:"status"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+
+	IntervalType  IntervalType `json:"interval_type"`
+	IntervalDays  *int         `json:"interval_days,omitempty"`
+	DayOfMonth    *int         `json:"day_of_month,omitempty"`
+	IsEven        *bool        `json:"is_even,omitempty"`
+	SpecificDates []string     `json:"specific_dates,omitempty"`
+	NextRunAt     *time.Time   `json:"next_run_at,omitempty"`
+}
+
+func (s Status) Valid() bool {
+	switch s {
+	case StatusNew, StatusInProgress, StatusDone:
+		return true
+	default:
+		return false
+	}
+}
+
+func (t IntervalType) Valid() bool {
+	switch t {
+	case IntervalNone, IntervalDaily, IntervalMonthly, IntervalParity, IntervalSpecific:
+		return true
+	default:
+		return false
+	}
+}
+
+
+================================================================================
+📁 ПАПКА: pipopolam-03/internal\infrastructure/
+================================================================================
+
+================================================================================
+📁 ПАПКА: pipopolam-03/internal\infrastructure\postgres/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\infrastructure\postgres\pool.go
+Размер: 512 байт
+────────────────────────────────────────────────────────────────────────────────
+package postgres
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+func Open(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
+	if dsn == "" {
+		return nil, fmt.Errorf("database dsn is empty")
+	}
+
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, err
+	}
+
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, err
+	}
+
+	return pool, nil
+}
+
+
+================================================================================
+📁 ПАПКА: pipopolam-03/internal\repository/
+================================================================================
+
+================================================================================
+📁 ПАПКА: pipopolam-03/internal\repository\postgres/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\repository\postgres\task_repository.go
+Размер: 4,783 байт
+────────────────────────────────────────────────────────────────────────────────
+package postgres
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type Repository struct {
+	pool *pgxpool.Pool
+}
+
+func New(pool *pgxpool.Pool) *Repository {
+	return &Repository{pool: pool}
+}
+
+func (r *Repository) Create(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error) {
+	const query = `
+		INSERT INTO tasks (
+			title,
+			description,
+			status,
+			created_at,
+			updated_at,
+			interval_type,
+			interval_days,
+			day_of_month,
+			is_even,
+			specific_dates,
+			next_run_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		RETURNING
+			id, title, description, status, created_at, updated_at,
+			interval_type, interval_days, day_of_month, is_even, specific_dates, next_run_at
+	`
+
+	specificDatesRaw, err := json.Marshal(task.SpecificDates)
+	if err != nil {
+		return nil, err
+	}
+
+	row := r.pool.QueryRow(
+		ctx,
+		query,
+		task.Title,
+		task.Description,
+		task.Status,
+		task.CreatedAt,
+		task.UpdatedAt,
+		task.IntervalType,
+		task.IntervalDays,
+		task.DayOfMonth,
+		task.IsEven,
+		specificDatesRaw,
+		task.NextRunAt,
+	)
+	created, err := scanTask(row)
+	if err != nil {
+		return nil, err
+	}
+
+	return created, nil
+}
+
+func (r *Repository) GetByID(ctx context.Context, id int64) (*taskdomain.Task, error) {
+	const query = `
+		SELECT
+			id, title, description, status, created_at, updated_at,
+			interval_type, interval_days, day_of_month, is_even, specific_dates, next_run_at
+		FROM tasks
+		WHERE id = $1
+	`
+
+	row := r.pool.QueryRow(ctx, query, id)
+	found, err := scanTask(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, taskdomain.ErrNotFound
+		}
+
+		return nil, err
+	}
+
+	return found, nil
+}
+
+func (r *Repository) Update(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error) {
+	const query = `
+		UPDATE tasks
+		SET title = $1,
+			description = $2,
+			status = $3,
+			updated_at = $4,
+			interval_type = $5,
+			interval_days = $6,
+			day_of_month = $7,
+			is_even = $8,
+			specific_dates = $9,
+			next_run_at = $10
+		WHERE id = $11
+		RETURNING
+			id, title, description, status, created_at, updated_at,
+			interval_type, interval_days, day_of_month, is_even, specific_dates, next_run_at
+	`
+
+	specificDatesRaw, err := json.Marshal(task.SpecificDates)
+	if err != nil {
+		return nil, err
+	}
+
+	row := r.pool.QueryRow(
+		ctx,
+		query,
+		task.Title,
+		task.Description,
+		task.Status,
+		task.UpdatedAt,
+		task.IntervalType,
+		task.IntervalDays,
+		task.DayOfMonth,
+		task.IsEven,
+		specificDatesRaw,
+		task.NextRunAt,
+		task.ID,
+	)
+	updated, err := scanTask(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, taskdomain.ErrNotFound
+		}
+
+		return nil, err
+	}
+
+	return updated, nil
+}
+
+func (r *Repository) Delete(ctx context.Context, id int64) error {
+	const query = `DELETE FROM tasks WHERE id = $1`
+
+	result, err := r.pool.Exec(ctx, query, id)
+	if err != nil {
+		return err
+	}
+
+	if result.RowsAffected() == 0 {
+		return taskdomain.ErrNotFound
+	}
+
+	return nil
+}
+
+func (r *Repository) List(ctx context.Context) ([]taskdomain.Task, error) {
+	const query = `
+		SELECT
+			id, title, description, status, created_at, updated_at,
+			interval_type, interval_days, day_of_month, is_even, specific_dates, next_run_at
+		FROM tasks
+		ORDER BY id DESC
+	`
+
+	rows, err := r.pool.Query(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	tasks := make([]taskdomain.Task, 0)
+	for rows.Next() {
+		task, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+
+		tasks = append(tasks, *task)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return tasks, nil
+}
+
+type taskScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanTask(scanner taskScanner) (*taskdomain.Task, error) {
+	var (
+		task             taskdomain.Task
+		status           string
+		intervalType     string
+		specificDatesRaw []byte
+	)
+
+	if err := scanner.Scan(
+		&task.ID,
+		&task.Title,
+		&task.Description,
+		&status,
+		&task.CreatedAt,
+		&task.UpdatedAt,
+		&intervalType,
+		&task.IntervalDays,
+		&task.DayOfMonth,
+		&task.IsEven,
+		&specificDatesRaw,
+		&task.NextRunAt,
+	); err != nil {
+		return nil, err
+	}
+
+	task.Status = taskdomain.Status(status)
+	task.IntervalType = taskdomain.IntervalType(intervalType)
+
+	if len(specificDatesRaw) > 0 {
+		if err := json.Unmarshal(specificDatesRaw, &task.SpecificDates); err != nil {
+			return nil, err
+		}
+	}
+
+	if task.SpecificDates == nil {
+		task.SpecificDates = []string{}
+	}
+
+	return &task, nil
+}
+
+
+================================================================================
+📁 ПАПКА: pipopolam-03/internal\transport/
+================================================================================
+
+================================================================================
+📁 ПАПКА: pipopolam-03/internal\transport\http/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\router.go
+Размер: 1,099 байт
+────────────────────────────────────────────────────────────────────────────────
+package transporthttp
+
+import (
+	"net/http"
+
+	"github.com/gorilla/mux"
+
+	swaggerdocs "example.com/taskservice/internal/transport/http/docs"
+	httphandlers "example.com/taskservice/internal/transport/http/handlers"
+)
+
+func NewRouter(taskHandler *httphandlers.TaskHandler, docsHandler *swaggerdocs.Handler) *mux.Router {
+	router := mux.NewRouter().StrictSlash(true)
+
+	router.HandleFunc("/swagger/openapi.json", docsHandler.ServeSpec).Methods(http.MethodGet)
+	router.HandleFunc("/swagger/", docsHandler.ServeUI).Methods(http.MethodGet)
+	router.HandleFunc("/swagger", docsHandler.RedirectToUI).Methods(http.MethodGet)
+
+	api := router.PathPrefix("/api/v1").Subrouter()
+
+	api.HandleFunc("/tasks", taskHandler.Create).Methods(http.MethodPost)
+	api.HandleFunc("/tasks", taskHandler.List).Methods(http.MethodGet)
+	api.HandleFunc("/tasks/{id:[0-9]+}", taskHandler.GetByID).Methods(http.MethodGet)
+	api.HandleFunc("/tasks/{id:[0-9]+}", taskHandler.Update).Methods(http.MethodPut)
+	api.HandleFunc("/tasks/{id:[0-9]+}", taskHandler.Delete).Methods(http.MethodDelete)
+
+	return router
+}
+
+
+================================================================================
+📁 ПАПКА: pipopolam-03/internal\transport\http\docs/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\docs\handler.go
+Размер: 1,779 байт
+────────────────────────────────────────────────────────────────────────────────
+package docs
+
+import (
+	"embed"
+	"net/http"
+)
+
+//go:embed openapi.json
+var openAPISpec embed.FS
+
+type Handler struct {
+	spec []byte
+}
+
+func NewHandler() *Handler {
+	spec, err := openAPISpec.ReadFile("openapi.json")
+	if err != nil {
+		panic(err)
+	}
+
+	return &Handler{spec: spec}
+}
+
+func (h *Handler) ServeSpec(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+
+	_, _ = w.Write(h.spec)
+}
+
+func (h *Handler) ServeUI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+
+	_, _ = w.Write([]byte(swaggerUIHTML))
+}
+
+func (h *Handler) RedirectToUI(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "/swagger/", http.StatusMovedPermanently)
+}
+
+var swaggerUIHTML = []byte(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Task Service Swagger</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+  <style>
+    body { margin: 0; background: #f6f7fb; }
+    #swagger-ui { max-width: 1440px; margin: 0 auto; }
+  </style>
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js" crossorigin></script>
+  <script>
+    window.onload = function() {
+      window.ui = SwaggerUIBundle({
+        url: '/swagger/openapi.json',
+        dom_id: '#swagger-ui',
+        deepLinking: true,
+        presets: [SwaggerUIBundle.presets.apis],
+        layout: 'BaseLayout'
+      });
+    };
+  </script>
+</body>
+</html>`)
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\docs\openapi.json
+Размер: 13,708 байт
+────────────────────────────────────────────────────────────────────────────────
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Task Service API",
+    "version": "1.0.0",
+    "description": "CRUD API for tasks built with clean architecture."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8080"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Tasks",
+      "description": "Operations with tasks"
+    }
+  ],
+  "paths": {
+    "/api/v1/tasks": {
+      "get": {
+        "tags": [
+          "Tasks"
+        ],
+        "summary": "List tasks",
+        "responses": {
+          "200": {
+            "description": "Task list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Task"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Tasks"
+        ],
+        "summary": "Create task",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTaskRequest"
+              },
+              "examples": {
+                "no_schedule": {
+                  "summary": "Без периодичности",
+                  "value": {
+                    "title": "Prepare release",
+                    "description": "Collect release notes and check migrations",
+                    "status": "new",
+                    "interval_type": "none"
+                  }
+                },
+                "daily": {
+                  "summary": "Ежедневная: каждый 2-й день",
+                  "value": {
+                    "title": "Water plants",
+                    "description": "Office plants",
+                    "status": "new",
+                    "interval_type": "daily",
+                    "interval_days": 2
+                  }
+                },
+                "monthly": {
+                  "summary": "Ежемесячная: 15-го числа",
+                  "value": {
+                    "title": "Pay rent",
+                    "description": "Monthly rent payment",
+                    "status": "new",
+                    "interval_type": "monthly",
+                    "day_of_month": 15
+                  }
+                },
+                "parity_even": {
+                  "summary": "По четным дням",
+                  "value": {
+                    "title": "Even-day task",
+                    "description": "Runs on even days",
+                    "status": "new",
+                    "interval_type": "parity",
+                    "is_even": true
+                  }
+                },
+                "specific_dates": {
+                  "summary": "На конкретные даты",
+                  "value": {
+                    "title": "Quarterly campaign",
+                    "description": "Launch campaign",
+                    "status": "new",
+                    "interval_type": "dates",
+                    "specific_dates": [
+                      "2026-04-10",
+                      "2026-04-20"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created task",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{id}": {
+      "get": {
+        "tags": [
+          "Tasks"
+        ],
+        "summary": "Get task by ID",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Task",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Tasks"
+        ],
+        "summary": "Update task",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateTaskRequest"
+              },
+              "examples": {
+                "set_daily": {
+                  "summary": "Сделать задачу ежедневной",
+                  "value": {
+                    "title": "Prepare release",
+                    "description": "Collect release notes and check migrations",
+                    "status": "in_progress",
+                    "interval_type": "daily",
+                    "interval_days": 1
+                  }
+                },
+                "set_specific_dates": {
+                  "summary": "Переключить на конкретные даты",
+                  "value": {
+                    "title": "Prepare release",
+                    "description": "Run only on specific dates",
+                    "status": "in_progress",
+                    "interval_type": "dates",
+                    "specific_dates": [
+                      "2026-05-01",
+                      "2026-05-15"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated task",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Tasks"
+        ],
+        "summary": "Delete task",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "responses": {
+      "BadRequest": {
+        "description": "Bad request",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Resource not found",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "CreateTaskRequest": {
+        "type": "object",
+        "required": [
+          "title"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "example": "Prepare release"
+          },
+          "description": {
+            "type": "string",
+            "example": "Collect release notes and check migrations"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "new",
+              "in_progress",
+              "done"
+            ],
+            "example": "new"
+          },
+          "interval_type": {
+            "type": "string",
+            "enum": [
+              "none",
+              "daily",
+              "monthly",
+              "parity",
+              "dates"
+            ],
+            "example": "daily"
+          },
+          "interval_days": {
+            "type": "integer",
+            "minimum": 1,
+            "nullable": true,
+            "example": 2
+          },
+          "day_of_month": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 30,
+            "nullable": true,
+            "example": 15
+          },
+          "is_even": {
+            "type": "boolean",
+            "nullable": true,
+            "example": true
+          },
+          "specific_dates": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "date"
+            },
+            "example": [
+              "2026-04-10",
+              "2026-04-20"
+            ]
+          }
+        }
+      },
+      "UpdateTaskRequest": {
+        "type": "object",
+        "required": [
+          "title",
+          "status"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "example": "Prepare release"
+          },
+          "description": {
+            "type": "string",
+            "example": "Collect release notes and check migrations"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "new",
+              "in_progress",
+              "done"
+            ],
+            "example": "in_progress"
+          },
+          "interval_type": {
+            "type": "string",
+            "enum": [
+              "none",
+              "daily",
+              "monthly",
+              "parity",
+              "dates"
+            ],
+            "example": "daily"
+          },
+          "interval_days": {
+            "type": "integer",
+            "minimum": 1,
+            "nullable": true,
+            "example": 2
+          },
+          "day_of_month": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 30,
+            "nullable": true,
+            "example": 15
+          },
+          "is_even": {
+            "type": "boolean",
+            "nullable": true,
+            "example": true
+          },
+          "specific_dates": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "date"
+            },
+            "example": [
+              "2026-04-10",
+              "2026-04-20"
+            ]
+          }
+        }
+      },
+      "Task": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "example": 1
+          },
+          "title": {
+            "type": "string",
+            "example": "Prepare release"
+          },
+          "description": {
+            "type": "string",
+            "example": "Collect release notes and check migrations"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "new",
+              "in_progress",
+              "done"
+            ],
+            "example": "new"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-03-24T00:00:00Z"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-03-24T00:00:00Z"
+          },
+          "interval_type": {
+            "type": "string",
+            "enum": [
+              "none",
+              "daily",
+              "monthly",
+              "parity",
+              "dates"
+            ],
+            "example": "daily"
+          },
+          "interval_days": {
+            "type": "integer",
+            "minimum": 1,
+            "nullable": true,
+            "example": 2
+          },
+          "day_of_month": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 30,
+            "nullable": true,
+            "example": 15
+          },
+          "is_even": {
+            "type": "boolean",
+            "nullable": true,
+            "example": true
+          },
+          "specific_dates": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "date"
+            },
+            "example": [
+              "2026-04-10",
+              "2026-04-20"
+            ]
+          },
+          "next_run_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "example": "2026-04-10T00:00:00Z"
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string",
+            "example": "task not found"
+          }
+        }
+      }
+    }
+  }
+}
+
+
+================================================================================
+📁 ПАПКА: pipopolam-03/internal\transport\http\handlers/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\handlers\dto.go
+Размер: 1,934 байт
+────────────────────────────────────────────────────────────────────────────────
+package handlers
+
+import (
+	"time"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type taskMutationDTO struct {
+	Title         string                  `json:"title"`
+	Description   string                  `json:"description"`
+	Status        taskdomain.Status       `json:"status"`
+	IntervalType  taskdomain.IntervalType `json:"interval_type"`
+	IntervalDays  *int                    `json:"interval_days,omitempty"`
+	DayOfMonth    *int                    `json:"day_of_month,omitempty"`
+	IsEven        *bool                   `json:"is_even,omitempty"`
+	SpecificDates []string                `json:"specific_dates,omitempty"`
+}
+
+type taskDTO struct {
+	ID            int64                   `json:"id"`
+	Title         string                  `json:"title"`
+	Description   string                  `json:"description"`
+	Status        taskdomain.Status       `json:"status"`
+	CreatedAt     time.Time               `json:"created_at"`
+	UpdatedAt     time.Time               `json:"updated_at"`
+	IntervalType  taskdomain.IntervalType `json:"interval_type"`
+	IntervalDays  *int                    `json:"interval_days,omitempty"`
+	DayOfMonth    *int                    `json:"day_of_month,omitempty"`
+	IsEven        *bool                   `json:"is_even,omitempty"`
+	SpecificDates []string                `json:"specific_dates,omitempty"`
+	NextRunAt     *time.Time              `json:"next_run_at,omitempty"`
+}
+
+func newTaskDTO(task *taskdomain.Task) taskDTO {
+	return taskDTO{
+		ID:            task.ID,
+		Title:         task.Title,
+		Description:   task.Description,
+		Status:        task.Status,
+		CreatedAt:     task.CreatedAt,
+		UpdatedAt:     task.UpdatedAt,
+		IntervalType:  task.IntervalType,
+		IntervalDays:  task.IntervalDays,
+		DayOfMonth:    task.DayOfMonth,
+		IsEven:        task.IsEven,
+		SpecificDates: task.SpecificDates,
+		NextRunAt:     task.NextRunAt,
+	}
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\handlers\task_handler.go
+Размер: 4,239 байт
+────────────────────────────────────────────────────────────────────────────────
+package handlers
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strconv"
+
+	"github.com/gorilla/mux"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+	taskusecase "example.com/taskservice/internal/usecase/task"
+)
+
+type TaskHandler struct {
+	usecase taskusecase.Usecase
+}
+
+func NewTaskHandler(usecase taskusecase.Usecase) *TaskHandler {
+	return &TaskHandler{usecase: usecase}
+}
+
+func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
+	var req taskMutationDTO
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	created, err := h.usecase.Create(r.Context(), taskusecase.CreateInput{
+		Title:       req.Title,
+		Description: req.Description,
+		Status:      req.Status,
+		// Новые поля для периодичности
+		IntervalType:  req.IntervalType,
+		IntervalDays:  req.IntervalDays,
+		DayOfMonth:    req.DayOfMonth,
+		IsEven:        req.IsEven,
+		SpecificDates: req.SpecificDates,
+	})
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, newTaskDTO(created))
+}
+
+func (h *TaskHandler) GetByID(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	task, err := h.usecase.GetByID(r.Context(), id)
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, newTaskDTO(task))
+}
+
+func (h *TaskHandler) Update(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	var req taskMutationDTO
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	updated, err := h.usecase.Update(r.Context(), id, taskusecase.UpdateInput{
+		Title:       req.Title,
+		Description: req.Description,
+		Status:      req.Status,
+		// Новые поля для периодичности
+		IntervalType:  req.IntervalType,
+		IntervalDays:  req.IntervalDays,
+		DayOfMonth:    req.DayOfMonth,
+		IsEven:        req.IsEven,
+		SpecificDates: req.SpecificDates,
+	})
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, newTaskDTO(updated))
+}
+
+func (h *TaskHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	if err := h.usecase.Delete(r.Context(), id); err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
+	tasks, err := h.usecase.List(r.Context())
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	response := make([]taskDTO, 0, len(tasks))
+	for i := range tasks {
+		response = append(response, newTaskDTO(&tasks[i]))
+	}
+
+	writeJSON(w, http.StatusOK, response)
+}
+
+func getIDFromRequest(r *http.Request) (int64, error) {
+	rawID := mux.Vars(r)["id"]
+	if rawID == "" {
+		return 0, errors.New("missing task id")
+	}
+
+	id, err := strconv.ParseInt(rawID, 10, 64)
+	if err != nil {
+		return 0, errors.New("invalid task id")
+	}
+
+	if id <= 0 {
+		return 0, errors.New("invalid task id")
+	}
+
+	return id, nil
+}
+
+func decodeJSON(r *http.Request, dst any) error {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+
+	if err := decoder.Decode(dst); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func writeUsecaseError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, taskdomain.ErrNotFound):
+		writeError(w, http.StatusNotFound, err)
+	case errors.Is(err, taskusecase.ErrInvalidInput):
+		writeError(w, http.StatusBadRequest, err)
+	default:
+		writeError(w, http.StatusInternalServerError, err)
+	}
+}
+
+func writeError(w http.ResponseWriter, status int, err error) {
+	writeJSON(w, status, map[string]string{
+		"error": err.Error(),
+	})
+}
+
+func writeJSON(w http.ResponseWriter, status int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+
+================================================================================
+📁 ПАПКА: pipopolam-03/internal\usecase/
+================================================================================
+
+================================================================================
+📁 ПАПКА: pipopolam-03/internal\usecase\task/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\task\errors.go
+Размер: 91 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import "errors"
+
+var ErrInvalidInput = errors.New("invalid task input")
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\task\ports.go
+Размер: 1,367 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import (
+	"context"
+	"time"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type Repository interface {
+	Create(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error)
+	GetByID(ctx context.Context, id int64) (*taskdomain.Task, error)
+	Update(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error)
+	Delete(ctx context.Context, id int64) error
+	List(ctx context.Context) ([]taskdomain.Task, error)
+}
+
+type Usecase interface {
+	Create(ctx context.Context, input CreateInput) (*taskdomain.Task, error)
+	GetByID(ctx context.Context, id int64) (*taskdomain.Task, error)
+	Update(ctx context.Context, id int64, input UpdateInput) (*taskdomain.Task, error)
+	Delete(ctx context.Context, id int64) error
+	List(ctx context.Context) ([]taskdomain.Task, error)
+}
+
+type CreateInput struct {
+	Title         string
+	Description   string
+	Status        taskdomain.Status
+	IntervalType  taskdomain.IntervalType
+	IntervalDays  *int
+	DayOfMonth    *int
+	IsEven        *bool
+	SpecificDates []string
+	NextRunAt     *time.Time
+}
+
+type UpdateInput struct {
+	Title         string
+	Description   string
+	Status        taskdomain.Status
+	IntervalType  taskdomain.IntervalType
+	IntervalDays  *int
+	DayOfMonth    *int
+	IsEven        *bool
+	SpecificDates []string
+	NextRunAt     *time.Time
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\task\service.go
+Размер: 11,019 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import (
+	"context"
+	"fmt"
+	"slices"
+	"strings"
+	"time"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type Service struct {
+	repo Repository
+	now  func() time.Time
+}
+
+func NewService(repo Repository) *Service {
+	return &Service{
+		repo: repo,
+		now:  func() time.Time { return time.Now().UTC() },
+	}
+}
+
+// Считаем, сколько дней в месяце
+func daysInMonth(year int, month time.Month) int {
+	return time.Date(year, month+1, 0, 0, 0, 0, 0, time.UTC).Day()
+}
+
+func (s *Service) Create(ctx context.Context, input CreateInput) (*taskdomain.Task, error) {
+	normalized, err := validateCreateInput(input, s.now())
+	if err != nil {
+		return nil, err
+	}
+
+	model := &taskdomain.Task{
+		Title:         normalized.Title,
+		Description:   normalized.Description,
+		Status:        normalized.Status,
+		IntervalType:  normalized.IntervalType,
+		IntervalDays:  normalized.IntervalDays,
+		DayOfMonth:    normalized.DayOfMonth,
+		IsEven:        normalized.IsEven,
+		SpecificDates: normalized.SpecificDates,
+		NextRunAt:     normalized.NextRunAt,
+	}
+
+	now := s.now()
+	model.CreatedAt = now
+	model.UpdatedAt = now
+	next := s.calculateNextRun(*model, s.now())
+	model.NextRunAt = &next
+
+	created, err := s.repo.Create(ctx, model)
+	if err != nil {
+		return nil, err
+	}
+
+	return created, nil
+}
+
+func (s *Service) GetByID(ctx context.Context, id int64) (*taskdomain.Task, error) {
+	if id <= 0 {
+		return nil, fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+	}
+
+	return s.repo.GetByID(ctx, id)
+}
+
+func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (*taskdomain.Task, error) {
+	if id <= 0 {
+		return nil, fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+	}
+
+	normalized, err := validateUpdateInput(input, s.now())
+
+	if err != nil {
+		return nil, err
+	}
+
+	model := &taskdomain.Task{
+		ID:            id,
+		Title:         normalized.Title,
+		Description:   normalized.Description,
+		Status:        normalized.Status,
+		IntervalType:  normalized.IntervalType,
+		IntervalDays:  normalized.IntervalDays,
+		DayOfMonth:    normalized.DayOfMonth,
+		IsEven:        normalized.IsEven,
+		SpecificDates: normalized.SpecificDates,
+		NextRunAt:     normalized.NextRunAt,
+		UpdatedAt:     s.now(),
+	}
+
+	next := s.calculateNextRun(*model, s.now())
+	model.NextRunAt = &next
+
+	updated, err := s.repo.Update(ctx, model)
+	if err != nil {
+		return nil, err
+	}
+
+	return updated, nil
+}
+
+func (s *Service) Delete(ctx context.Context, id int64) error {
+	if id <= 0 {
+		return fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+	}
+
+	return s.repo.Delete(ctx, id)
+}
+
+func (s *Service) List(ctx context.Context) ([]taskdomain.Task, error) {
+	return s.repo.List(ctx)
+}
+
+func validateCreateInput(input CreateInput, now time.Time) (CreateInput, error) {
+	input.Title = strings.TrimSpace(input.Title)
+	input.Description = strings.TrimSpace(input.Description)
+
+	if input.Title == "" {
+		return CreateInput{}, fmt.Errorf("%w: title is required", ErrInvalidInput)
+	}
+
+	if input.Status == "" {
+		input.Status = taskdomain.StatusNew
+	}
+
+	if !input.Status.Valid() {
+		return CreateInput{}, fmt.Errorf("%w: invalid status", ErrInvalidInput)
+	}
+
+	normalizedSchedule, err := normalizeSchedule(input.IntervalType, input.IntervalDays, input.DayOfMonth, input.IsEven, input.SpecificDates, now)
+	if err != nil {
+		return CreateInput{}, err
+	}
+
+	input.IntervalType = normalizedSchedule.IntervalType
+	input.IntervalDays = normalizedSchedule.IntervalDays
+	input.DayOfMonth = normalizedSchedule.DayOfMonth
+	input.IsEven = normalizedSchedule.IsEven
+	input.SpecificDates = normalizedSchedule.SpecificDates
+
+	return input, nil
+}
+
+func validateUpdateInput(input UpdateInput, now time.Time) (UpdateInput, error) {
+	input.Title = strings.TrimSpace(input.Title)
+	input.Description = strings.TrimSpace(input.Description)
+
+	if input.Title == "" {
+		return UpdateInput{}, fmt.Errorf("%w: title is required", ErrInvalidInput)
+	}
+
+	if !input.Status.Valid() {
+		return UpdateInput{}, fmt.Errorf("%w: invalid status", ErrInvalidInput)
+	}
+
+	normalizedSchedule, err := normalizeSchedule(input.IntervalType, input.IntervalDays, input.DayOfMonth, input.IsEven, input.SpecificDates, now)
+	if err != nil {
+		return UpdateInput{}, err
+	}
+
+	input.IntervalType = normalizedSchedule.IntervalType
+	input.IntervalDays = normalizedSchedule.IntervalDays
+	input.DayOfMonth = normalizedSchedule.DayOfMonth
+	input.IsEven = normalizedSchedule.IsEven
+	input.SpecificDates = normalizedSchedule.SpecificDates
+
+	return input, nil
+}
+
+type schedule struct {
+	IntervalType  taskdomain.IntervalType
+	IntervalDays  *int
+	DayOfMonth    *int
+	IsEven        *bool
+	SpecificDates []string
+}
+
+// Нормализация и валидация расписания
+func normalizeSchedule(intervalType taskdomain.IntervalType, intervalDays *int, dayOfMonth *int, isEven *bool, specificDates []string, now time.Time) (schedule, error) {
+	if intervalType == "" {
+		intervalType = taskdomain.IntervalNone
+	}
+
+	if !intervalType.Valid() {
+		return schedule{}, fmt.Errorf("%w: invalid interval_type", ErrInvalidInput)
+	}
+
+	result := schedule{IntervalType: intervalType}
+
+	switch intervalType {
+
+	case taskdomain.IntervalNone:
+		return result, nil
+
+	case taskdomain.IntervalDaily:
+		if intervalDays == nil || *intervalDays <= 0 {
+			return schedule{}, fmt.Errorf("%w: interval_days must be >= 1 for daily interval", ErrInvalidInput)
+		}
+		days := *intervalDays
+		result.IntervalDays = &days
+
+	case taskdomain.IntervalMonthly:
+		if dayOfMonth == nil || *dayOfMonth < 1 || *dayOfMonth > 31 {
+			return schedule{}, fmt.Errorf("%w: day_of_month must be from 1 to 31 for monthly interval", ErrInvalidInput)
+		}
+		day := *dayOfMonth
+		result.DayOfMonth = &day
+
+	case taskdomain.IntervalParity:
+		if isEven == nil {
+			return schedule{}, fmt.Errorf("%w: is_even is required for parity interval", ErrInvalidInput)
+		}
+		parity := *isEven
+		result.IsEven = &parity
+
+	case taskdomain.IntervalSpecific:
+		if len(specificDates) == 0 {
+			return schedule{}, fmt.Errorf("%w: specific_dates must not be empty for dates interval", ErrInvalidInput)
+		}
+		normalizedDates, _, err := normalizeSpecificDates(specificDates, now)
+		if err != nil {
+			return schedule{}, err
+		}
+		result.SpecificDates = normalizedDates
+	}
+
+	return result, nil
+}
+
+func dayStartUTC(t time.Time) time.Time {
+	u := t.UTC()
+	return time.Date(u.Year(), u.Month(), u.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+// Вычисление следующей даты для ежемесячных заадч
+func nextMonthlyRun(now time.Time, day int) time.Time {
+	current := dayStartUTC(now)
+	year, month, _ := current.Date()
+
+	for {
+		lastDay := daysInMonth(year, month)
+
+		// Если в след. месяце меньше дней - задачу планируем на последний
+		actualDay := day
+		if day > lastDay {
+			actualDay = lastDay
+		}
+
+		candidate := time.Date(year, month, actualDay, 0, 0, 0, 0, time.UTC)
+
+		if !candidate.Before(current) {
+			return candidate
+		}
+
+		month++
+		if month > 12 {
+			month = 1
+			year++
+		}
+	}
+}
+
+func nextParityRun(now time.Time, even bool) time.Time {
+	candidate := dayStartUTC(now)
+	for {
+		if (candidate.Day()%2 == 0) == even {
+			return candidate
+		}
+		candidate = candidate.AddDate(0, 0, 1)
+	}
+}
+
+func (s *Service) calculateNextRun(task taskdomain.Task, now time.Time) time.Time {
+	switch task.IntervalType {
+
+	case taskdomain.IntervalDaily:
+		if task.IntervalDays == nil {
+			return now
+		}
+		return dayStartUTC(now).AddDate(0, 0, *task.IntervalDays)
+
+	case taskdomain.IntervalMonthly:
+		if task.DayOfMonth == nil {
+			return now
+		}
+		return nextMonthlyRun(now, *task.DayOfMonth)
+
+	case taskdomain.IntervalParity:
+		if task.IsEven == nil {
+			return now
+		}
+		return nextParityRun(now, *task.IsEven)
+
+	case taskdomain.IntervalSpecific:
+		_, nextRunAt, err := normalizeSpecificDates(task.SpecificDates, now)
+		if err != nil || nextRunAt == nil {
+			return now
+		}
+		return *nextRunAt
+
+	default:
+		return now
+	}
+}
+
+// Выбор времени для обновления задачи планировщиком
+func nextRunDelay(now time.Time) time.Duration {
+	now = now.UTC()
+
+	year, month, day := now.Date()
+
+	morning := time.Date(year, month, day, 6, 0, 0, 0, time.UTC)
+	evening := time.Date(year, month, day, 18, 0, 0, 0, time.UTC)
+
+	switch {
+	case now.Before(morning):
+		return morning.Sub(now)
+	case now.Before(evening):
+		return evening.Sub(now)
+	default:
+		nextMorning := morning.AddDate(0, 0, 1)
+		return nextMorning.Sub(now)
+	}
+}
+
+// Логика планировщика
+func (s *Service) runScheduledTasks(ctx context.Context) {
+	now := s.now()
+
+	tasks, err := s.repo.List(ctx)
+	if err != nil {
+		return
+	}
+
+	for _, task := range tasks {
+		if task.NextRunAt == nil || task.NextRunAt.After(now) {
+			continue
+		}
+
+		next := s.calculateNextRun(task, now)
+		task.NextRunAt = &next
+		task.UpdatedAt = now
+
+		if _, err := s.repo.Update(ctx, &task); err != nil {
+			continue
+		}
+	}
+}
+
+// Запуск планировщика в фоне
+func (s *Service) StartScheduler(ctx context.Context) {
+	go func() {
+		for {
+			delay := nextRunDelay(s.now())
+			timer := time.NewTimer(delay)
+
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+				s.runScheduledTasks(ctx)
+			}
+		}
+	}()
+}
+
+// Нормализация и валидация specific_dates
+func normalizeSpecificDates(raw []string, now time.Time) ([]string, *time.Time, error) {
+	normalized := make([]string, 0, len(raw))
+	parsed := make([]time.Time, 0, len(raw))
+	seen := map[string]struct{}{}
+
+	for _, dateStr := range raw {
+		trimmed := strings.TrimSpace(dateStr)
+		if trimmed == "" {
+			continue
+		}
+
+		date, err := time.Parse("2006-01-02", trimmed)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%w: invalid date format in specific_dates (expected YYYY-MM-DD)", ErrInvalidInput)
+		}
+
+		formatted := date.UTC().Format("2006-01-02")
+		if _, ok := seen[formatted]; ok {
+			continue
+		}
+		seen[formatted] = struct{}{}
+
+		normalized = append(normalized, formatted)
+		parsed = append(parsed, dayStartUTC(date))
+	}
+
+	if len(normalized) == 0 {
+		return nil, nil, fmt.Errorf("%w: specific_dates must contain at least one valid date", ErrInvalidInput)
+	}
+
+	slices.Sort(normalized)
+	slices.SortFunc(parsed, func(a, b time.Time) int {
+		if a.Before(b) {
+			return -1
+		}
+		if a.After(b) {
+			return 1
+		}
+		return 0
+	})
+
+	today := dayStartUTC(now)
+	for _, d := range parsed {
+		if !d.Before(today) {
+			next := d
+			return normalized, &next, nil
+		}
+	}
+
+	return nil, nil, fmt.Errorf("%w: all specific_dates are in the past", ErrInvalidInput)
+}
+
+
+================================================================================
+📁 ПАПКА: pipopolam-03/migrations/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: migrations\0001_create_tasks.up.sql
+Размер: 318 байт
+────────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS tasks (
+	id BIGSERIAL PRIMARY KEY,
+	title TEXT NOT NULL,
+	description TEXT NOT NULL DEFAULT '',
+	status TEXT NOT NULL,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks (status);
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: migrations\0002_add_task_recurrence.up.sql
+Размер: 1,264 байт
+────────────────────────────────────────────────────────────────────────────────
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS interval_type TEXT NOT NULL DEFAULT 'none';
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS interval_days INT;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS day_of_month INT;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS is_even BOOLEAN;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS specific_dates JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS next_run_at TIMESTAMPTZ;
+
+DO $$
+BEGIN
+	IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_interval_type') THEN
+		ALTER TABLE tasks
+		ADD CONSTRAINT chk_interval_type
+		CHECK (interval_type IN ('none', 'daily', 'monthly', 'parity', 'dates'));
+	END IF;
+END
+$$;
+
+DO $$
+BEGIN
+	IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_interval_days') THEN
+		ALTER TABLE tasks
+		ADD CONSTRAINT chk_interval_days
+		CHECK (interval_days IS NULL OR interval_days >= 1);
+	END IF;
+END
+$$;
+
+DO $$
+BEGIN
+	IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_day_of_month') THEN
+		ALTER TABLE tasks
+		ADD CONSTRAINT chk_day_of_month
+		CHECK (day_of_month IS NULL OR (day_of_month >= 1 AND day_of_month <= 30));
+	END IF;
+END
+$$;
+
+CREATE INDEX IF NOT EXISTS idx_tasks_next_run_at ON tasks (next_run_at);
+
+
+================================================================================
+СТАТИСТИКА ЭКСПОРТА
+================================================================================
+Всего обработано файлов: 20
+Всего пропущено файлов: 2
+Общий размер выходного файла: 67,214 байт

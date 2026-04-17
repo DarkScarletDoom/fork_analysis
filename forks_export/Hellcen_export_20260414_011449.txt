@@ -1,0 +1,2781 @@
+================================================================================
+ЭКСПОРТ РЕПОЗИТОРИЯ: Hellcen
+Путь: C:\Users\vladk\Desktop\test\forks\Hellcen
+Дата экспорта: 2026-04-14 01:14:49
+================================================================================
+
+
+================================================================================
+📁 ПАПКА: Hellcen/
+================================================================================
+
+[ПРОПУЩЕН] .dockerignore (бинарный/служебный/слишком большой)
+
+[ПРОПУЩЕН] .gitignore (бинарный/служебный/слишком большой)
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: Dockerfile
+Размер: 414 байт
+────────────────────────────────────────────────────────────────────────────────
+FROM golang:1.23.0-alpine AS builder
+
+WORKDIR /src
+
+RUN apk add --no-cache ca-certificates
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/taskservice ./cmd/api
+
+FROM alpine:3.21
+
+WORKDIR /app
+
+RUN apk add --no-cache ca-certificates
+
+COPY --from=builder /out/taskservice /app/taskservice
+
+EXPOSE 8080
+
+CMD ["/app/taskservice"]
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: README.md
+Размер: 1,224 байт
+────────────────────────────────────────────────────────────────────────────────
+# Task Service
+
+Сервис для управления задачами с HTTP API на Go.
+
+## Требования
+
+- Go `1.23+`
+- Docker и Docker Compose
+
+## Быстрый запуск через Docker Compose
+
+```bash
+docker compose up --build
+```
+
+После запуска сервис будет доступен по адресу `http://localhost:8080`.
+
+Если `postgres` уже запускался ранее со старой схемой, пересоздай volume:
+
+```bash
+docker compose down -v
+docker compose up --build
+```
+
+Причина в том, что SQL-файл из `migrations/0001_create_tasks.up.sql` монтируется в `docker-entrypoint-initdb.d` и применяется только при инициализации пустого data volume.
+
+## Swagger
+
+Swagger UI:
+
+```text
+http://localhost:8080/swagger/
+```
+
+OpenAPI JSON:
+
+```text
+http://localhost:8080/swagger/openapi.json
+```
+
+## API
+
+Базовый префикс API:
+
+```text
+/api/v1
+```
+
+Основные маршруты:
+
+- `POST /api/v1/tasks`
+- `GET /api/v1/tasks`
+- `GET /api/v1/tasks/{id}`
+- `PUT /api/v1/tasks/{id}`
+- `DELETE /api/v1/tasks/{id}`
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: docker-compose.yml
+Размер: 897 байт
+────────────────────────────────────────────────────────────────────────────────
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: taskservice
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d taskservice"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+#      - ./migrations/0001_create_tasks.up.sql:/docker-entrypoint-initdb.d/001_create_tasks.sql:ro
+      - ./migrations:/docker-entrypoint-initdb.d
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      HTTP_ADDR: :8080
+      DATABASE_DSN: postgres://postgres:postgres@postgres:5432/taskservice?sslmode=disable
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: go.mod
+Размер: 958 байт
+────────────────────────────────────────────────────────────────────────────────
+module example.com/taskservice
+
+go 1.23.0
+
+require (
+	github.com/gorilla/mux v1.8.1
+	github.com/jackc/pgx/v5 v5.7.6
+)
+
+require (
+	github.com/beorn7/perks v1.0.1 // indirect
+	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
+	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
+	github.com/prometheus/client_golang v1.23.2 // indirect
+	github.com/prometheus/client_model v0.6.2 // indirect
+	github.com/prometheus/common v0.66.1 // indirect
+	github.com/prometheus/procfs v0.16.1 // indirect
+	go.yaml.in/yaml/v2 v2.4.2 // indirect
+	golang.org/x/crypto v0.37.0 // indirect
+	golang.org/x/sync v0.16.0 // indirect
+	golang.org/x/sys v0.35.0 // indirect
+	golang.org/x/text v0.28.0 // indirect
+	google.golang.org/protobuf v1.36.8 // indirect
+)
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: go.sum
+Размер: 4,767 байт
+────────────────────────────────────────────────────────────────────────────────
+github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
+github.com/beorn7/perks v1.0.1/go.mod h1:G2ZrVWU2WbWT9wwq4/hrbKbnv/1ERSJQ0ibhJ6rlkpw=
+github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
+github.com/cespare/xxhash/v2 v2.3.0/go.mod h1:VGX0DQ3Q6kWi7AoAeZDth3/j3BFtOZR5XLFGgcrjCOs=
+github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
+github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/gorilla/mux v1.8.1 h1:TuBL49tXwgrFYWhqrNgrUNEY92u81SPhu7sTdzQEiWY=
+github.com/gorilla/mux v1.8.1/go.mod h1:AKf9I4AEqPTmMytcMc0KkNouC66V3BtZ4qD5fmWSiMQ=
+github.com/jackc/pgpassfile v1.0.0 h1:/6Hmqy13Ss2zCq62VdNG8tM1wchn8zjSGOBJ6icpsIM=
+github.com/jackc/pgpassfile v1.0.0/go.mod h1:CEx0iS5ambNFdcRtxPj5JhEz+xB6uRky5eyVu/W2HEg=
+github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 h1:iCEnooe7UlwOQYpKFhBabPMi4aNAfoODPEFNiAnClxo=
+github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761/go.mod h1:5TJZWKEWniPve33vlWYSoGYefn3gLQRzjfDlhSJ9ZKM=
+github.com/jackc/pgx/v5 v5.7.6 h1:rWQc5FwZSPX58r1OQmkuaNicxdmExaEz5A2DO2hUuTk=
+github.com/jackc/pgx/v5 v5.7.6/go.mod h1:aruU7o91Tc2q2cFp5h4uP3f6ztExVpyVv88Xl/8Vl8M=
+github.com/jackc/puddle/v2 v2.2.2 h1:PR8nw+E/1w0GLuRFSmiioY6UooMp6KJv0/61nB7icHo=
+github.com/jackc/puddle/v2 v2.2.2/go.mod h1:vriiEXHvEE654aYKXXjOvZM39qJ0q+azkZFrfEOc3H4=
+github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 h1:C3w9PqII01/Oq1c1nUAm88MOHcQC9l5mIlSMApZMrHA=
+github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822/go.mod h1:+n7T8mK8HuQTcFwEeznm/DIxMOiR9yIdICNftLE1DvQ=
+github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
+github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
+github.com/prometheus/client_golang v1.23.2 h1:Je96obch5RDVy3FDMndoUsjAhG5Edi49h0RJWRi/o0o=
+github.com/prometheus/client_golang v1.23.2/go.mod h1:Tb1a6LWHB3/SPIzCoaDXI4I8UHKeFTEQ1YCr+0Gyqmg=
+github.com/prometheus/client_model v0.6.2 h1:oBsgwpGs7iVziMvrGhE53c/GrLUsZdHnqNwqPLxwZyk=
+github.com/prometheus/client_model v0.6.2/go.mod h1:y3m2F6Gdpfy6Ut/GBsUqTWZqCUvMVzSfMLjcu6wAwpE=
+github.com/prometheus/common v0.66.1 h1:h5E0h5/Y8niHc5DlaLlWLArTQI7tMrsfQjHV+d9ZoGs=
+github.com/prometheus/common v0.66.1/go.mod h1:gcaUsgf3KfRSwHY4dIMXLPV0K/Wg1oZ8+SbZk/HH/dA=
+github.com/prometheus/procfs v0.16.1 h1:hZ15bTNuirocR6u0JZ6BAHHmwS1p8B4P6MRqxtzMyRg=
+github.com/prometheus/procfs v0.16.1/go.mod h1:teAbpZRB1iIAJYREa1LsoWUXykVXA1KlTmWl8x/U+Is=
+github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
+github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UVUgZn+9EI=
+github.com/stretchr/testify v1.7.0/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
+github.com/stretchr/testify v1.8.1 h1:w7B6lhMri9wdJUVmEZPGGhZzrYTPvgJArz7wNPgYKsk=
+github.com/stretchr/testify v1.8.1/go.mod h1:w2LPCIKwWwSfY2zedu0+kehJoqGctiVI29o6fzry7u4=
+go.yaml.in/yaml/v2 v2.4.2 h1:DzmwEr2rDGHl7lsFgAHxmNz/1NlQ7xLIrlN2h5d1eGI=
+go.yaml.in/yaml/v2 v2.4.2/go.mod h1:081UH+NErpNdqlCXm3TtEran0rJZGxAYx9hb/ELlsPU=
+golang.org/x/crypto v0.37.0 h1:kJNSjF/Xp7kU0iB2Z+9viTPMW4EqqsrywMXLJOOsXSE=
+golang.org/x/crypto v0.37.0/go.mod h1:vg+k43peMZ0pUMhYmVAWysMK35e6ioLh3wB8ZCAfbVc=
+golang.org/x/sync v0.13.0 h1:AauUjRAJ9OSnvULf/ARrrVywoJDy0YS2AwQ98I37610=
+golang.org/x/sync v0.13.0/go.mod h1:1dzgHSNfp02xaA81J2MS99Qcpr2w7fw1gpm99rleRqA=
+golang.org/x/sync v0.16.0 h1:ycBJEhp9p4vXvUZNszeOq0kGTPghopOL8q0fq3vstxw=
+golang.org/x/sync v0.16.0/go.mod h1:1dzgHSNfp02xaA81J2MS99Qcpr2w7fw1gpm99rleRqA=
+golang.org/x/sys v0.35.0 h1:vz1N37gP5bs89s7He8XuIYXpyY0+QlsKmzipCbUtyxI=
+golang.org/x/sys v0.35.0/go.mod h1:BJP2sWEmIv4KK5OTEluFJCKSidICx8ciO85XgH3Ak8k=
+golang.org/x/text v0.24.0 h1:dd5Bzh4yt5KYA8f9CJHCP4FB4D51c2c6JvN37xJJkJ0=
+golang.org/x/text v0.24.0/go.mod h1:L8rBsPeo2pSS+xqN0d5u2ikmjtmoJbDBT1b7nHvFCdU=
+golang.org/x/text v0.28.0 h1:rhazDwis8INMIwQ4tpjLDzUhx6RlXqZNPEM0huQojng=
+golang.org/x/text v0.28.0/go.mod h1:U8nCwOR8jO/marOQ0QbDiOngZVEBB7MAiitBuMjXiNU=
+google.golang.org/protobuf v1.36.8 h1:xHScyCOEuuwZEc6UtSOvPbAT4zRh0xcNRYekJwfqyMc=
+google.golang.org/protobuf v1.36.8/go.mod h1:fuxRtAxBytpl4zzqUh6/eyUujkJdNiuEkXntxiD/uRU=
+gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
+gopkg.in/yaml.v3 v3.0.0-20200313102051-9f266ea9e77c/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
+gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+
+
+================================================================================
+📁 ПАПКА: Hellcen/cmd/
+================================================================================
+
+================================================================================
+📁 ПАПКА: Hellcen/cmd\api/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: cmd\api\main.go
+Размер: 3,593 байт
+────────────────────────────────────────────────────────────────────────────────
+package main
+
+import (
+	"context"
+	"errors"
+	"example.com/taskservice/internal/usecase/recurring"
+	"example.com/taskservice/metrics"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	infrastructurepostgres "example.com/taskservice/internal/infrastructure/postgres"
+	postgresrepo "example.com/taskservice/internal/repository/postgres"
+	transporthttp "example.com/taskservice/internal/transport/http"
+	swaggerdocs "example.com/taskservice/internal/transport/http/docs"
+	httphandlers "example.com/taskservice/internal/transport/http/handlers"
+	"example.com/taskservice/internal/usecase/task"
+)
+
+func main() {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
+
+	cfg := loadConfig()
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	pool, err := infrastructurepostgres.Open(ctx, cfg.DatabaseDSN)
+	if err != nil {
+		logger.Error("open postgres", "error", err)
+		os.Exit(1)
+	}
+	defer pool.Close()
+
+	taskRepo := postgresrepo.New(pool)
+	taskUsecase := task.NewService(taskRepo)
+	taskHandler := httphandlers.NewTaskHandler(taskUsecase)
+
+	recurringRuleRepo := postgresrepo.NewRecurringRuleRepository(pool)
+	recurringRuleUsecase := recurring.NewService(recurringRuleRepo)
+	recurringRuleHandler := httphandlers.NewRecurringHandler(recurringRuleUsecase)
+
+	go metrics.CollectMetrics(recurringRuleUsecase)
+
+	docsHandler := swaggerdocs.NewHandler()
+
+	router := transporthttp.NewRouter(taskHandler, recurringRuleHandler, docsHandler)
+
+	server := &http.Server{
+		Addr:              cfg.HTTPAddr,
+		Handler:           router,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+
+	go func() {
+		logger.Info("http server started", "addr", cfg.HTTPAddr)
+
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("listen and serve", "error", err)
+			os.Exit(1)
+		}
+	}()
+
+	<-ctx.Done()
+
+	logger.Info("shutting down gracefully...", "timeout", "10s")
+
+	go func() {
+		<-ctx.Done()
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			logger.Error("shutdown http server", "error", err)
+		}
+	}()
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+
+	// Graceful shutdown сервера
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		logger.Error("shutdown http server", "error", err)
+		if err := server.Close(); err != nil {
+			logger.Error("force close server", "error", err)
+		}
+	} else {
+		logger.Info("http server shut down gracefully")
+	}
+
+	// Дополнительное время для завершения других операций
+	time.Sleep(100 * time.Millisecond)
+	logger.Info("application stopped")
+}
+
+type config struct {
+	HTTPAddr    string
+	DatabaseDSN string
+}
+
+func loadConfig() config {
+	cfg := config{
+		HTTPAddr:    envOrDefault("HTTP_ADDR", ":8080"),
+		DatabaseDSN: envOrDefault("DATABASE_DSN", "postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"),
+	}
+
+	if cfg.DatabaseDSN == "" {
+		panic(fmt.Errorf("DATABASE_DSN is required"))
+	}
+
+	return cfg
+}
+
+func envOrDefault(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+
+	return fallback
+}
+
+
+================================================================================
+📁 ПАПКА: Hellcen/internal/
+================================================================================
+
+================================================================================
+📁 ПАПКА: Hellcen/internal\domain/
+================================================================================
+
+================================================================================
+📁 ПАПКА: Hellcen/internal\domain\recurringrule/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\domain\recurringrule\recurring_role.go
+Размер: 3,709 байт
+────────────────────────────────────────────────────────────────────────────────
+package recurringrule
+
+import (
+	"database/sql/driver"
+	"encoding/json"
+	"errors"
+	"time"
+)
+
+var ErrNotFound = errors.New("recurring rule not found")
+
+type Status string
+
+const (
+	StatusActive   Status = "active"
+	StatusPaused   Status = "paused"
+	StatusArchived Status = "archived"
+)
+
+func (s Status) Valid() bool {
+	switch s {
+	case StatusActive, StatusPaused, StatusArchived:
+		return true
+	}
+	return false
+}
+
+type RecurrenceType string
+
+const (
+	TypeDaily    RecurrenceType = "daily"
+	TypeMonthly  RecurrenceType = "monthly"
+	TypeEvenOdd  RecurrenceType = "evenodd"
+	TypeSpecific RecurrenceType = "specific"
+)
+
+func (t RecurrenceType) Valid() bool {
+	switch t {
+	case TypeDaily, TypeMonthly, TypeEvenOdd, TypeSpecific:
+		return true
+	}
+	return false
+}
+
+type DailyConfig struct {
+	IntervalDays int `json:"interval_days"`
+}
+
+type MonthlyConfig struct {
+	DayOfMonth int `json:"day_of_month"`
+}
+
+type EvenOddConfig struct {
+	Parity string `json:"parity"` // "even" или "odd"
+}
+
+type SpecificConfig struct {
+	Dates []time.Time `json:"dates"`
+}
+
+// JSONRawMessage для работы с JSONB
+type JSONRawMessage json.RawMessage
+
+func (j *JSONRawMessage) Scan(value interface{}) error {
+	if value == nil {
+		*j = nil
+		return nil
+	}
+	bytes, ok := value.([]byte)
+	if !ok {
+		return nil
+	}
+	*j = append((*j)[0:0], bytes...)
+	return nil
+}
+
+func (j JSONRawMessage) Value() (driver.Value, error) {
+	if len(j) == 0 {
+		return nil, nil
+	}
+	return []byte(j), nil
+}
+
+func (j JSONRawMessage) MarshalJSON() ([]byte, error) {
+	if len(j) == 0 {
+		return []byte("null"), nil
+	}
+	return j, nil
+}
+
+func (j *JSONRawMessage) UnmarshalJSON(data []byte) error {
+	if j == nil {
+		return nil
+	}
+	*j = append((*j)[0:0], data...)
+	return nil
+}
+
+type RecurringRule struct {
+	ID               int64           `json:"id"`
+	Title            string          `json:"title"`
+	Description      string          `json:"description"`
+	Status           Status          `json:"status"`
+	RecurrenceType   RecurrenceType  `json:"recurrence_type"`
+	RecurrenceConfig json.RawMessage `json:"recurrence_config"`
+	StartDate        time.Time       `json:"start_date"`
+	EndDate          *time.Time      `json:"end_date,omitempty"`
+	CreatedAt        time.Time       `json:"created_at"`
+	UpdatedAt        time.Time       `json:"updated_at"`
+}
+
+// Helper методы для получения конфигурации
+func (r *RecurringRule) GetDailyConfig() (*DailyConfig, error) {
+	if r.RecurrenceType != TypeDaily {
+		return nil, errors.New("not a daily rule")
+	}
+	var config DailyConfig
+	if err := json.Unmarshal(r.RecurrenceConfig, &config); err != nil {
+		return nil, err
+	}
+	return &config, nil
+}
+
+func (r *RecurringRule) GetMonthlyConfig() (*MonthlyConfig, error) {
+	if r.RecurrenceType != TypeMonthly {
+		return nil, errors.New("not a monthly rule")
+	}
+	var config MonthlyConfig
+	if err := json.Unmarshal(r.RecurrenceConfig, &config); err != nil {
+		return nil, err
+	}
+	return &config, nil
+}
+
+func (r *RecurringRule) GetEvenOddConfig() (*EvenOddConfig, error) {
+	if r.RecurrenceType != TypeEvenOdd {
+		return nil, errors.New("not an evenodd rule")
+	}
+	var config EvenOddConfig
+	if err := json.Unmarshal(r.RecurrenceConfig, &config); err != nil {
+		return nil, err
+	}
+	return &config, nil
+}
+
+func (r *RecurringRule) GetSpecificConfig() (*SpecificConfig, error) {
+	if r.RecurrenceType != TypeSpecific {
+		return nil, errors.New("not a specific rule")
+	}
+	var config SpecificConfig
+	if err := json.Unmarshal(r.RecurrenceConfig, &config); err != nil {
+		return nil, err
+	}
+	return &config, nil
+}
+
+
+================================================================================
+📁 ПАПКА: Hellcen/internal\domain\task/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\domain\task\errors.go
+Размер: 83 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import "errors"
+
+var ErrNotFound = errors.New("task not found")
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\domain\task\task.go
+Размер: 722 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import (
+	"time"
+)
+
+type Status string
+
+const (
+	StatusNew        Status = "new"
+	StatusInProgress Status = "in_progress"
+	StatusDone       Status = "done"
+)
+
+func (s Status) Valid() bool {
+	switch s {
+	case StatusNew, StatusInProgress, StatusDone:
+		return true
+	}
+	return false
+}
+
+type Task struct {
+	ID          int64     `json:"id"`
+	Title       string    `json:"title"`
+	Description string    `json:"description"`
+	Status      Status    `json:"status"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+
+	RecurringRuleID *int64     `json:"recurring_rule_id,omitempty"`
+	GenerationDate  *time.Time `json:"generation_date,omitempty"`
+}
+
+
+================================================================================
+📁 ПАПКА: Hellcen/internal\infrastructure/
+================================================================================
+
+================================================================================
+📁 ПАПКА: Hellcen/internal\infrastructure\postgres/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\infrastructure\postgres\pool.go
+Размер: 512 байт
+────────────────────────────────────────────────────────────────────────────────
+package postgres
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+func Open(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
+	if dsn == "" {
+		return nil, fmt.Errorf("database dsn is empty")
+	}
+
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, err
+	}
+
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, err
+	}
+
+	return pool, nil
+}
+
+
+================================================================================
+📁 ПАПКА: Hellcen/internal\repository/
+================================================================================
+
+================================================================================
+📁 ПАПКА: Hellcen/internal\repository\postgres/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\repository\postgres\recurring_repo.go
+Размер: 4,278 байт
+────────────────────────────────────────────────────────────────────────────────
+package postgres
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"example.com/taskservice/internal/domain/recurringrule"
+)
+
+type RecurringRuleRepository struct {
+	pool *pgxpool.Pool
+}
+
+func NewRecurringRuleRepository(pool *pgxpool.Pool) *RecurringRuleRepository {
+	return &RecurringRuleRepository{pool: pool}
+}
+
+func (r *RecurringRuleRepository) Create(ctx context.Context, rule *recurringrule.RecurringRule) (*recurringrule.RecurringRule, error) {
+	query := `
+		INSERT INTO recurring_rules (
+			title, description, status, recurrence_type, recurrence_config,
+			start_date, end_date, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		RETURNING id
+	`
+
+	err := r.pool.QueryRow(ctx, query,
+		rule.Title, rule.Description, rule.Status, rule.RecurrenceType,
+		rule.RecurrenceConfig, rule.StartDate, rule.EndDate,
+		rule.CreatedAt, rule.UpdatedAt,
+	).Scan(&rule.ID)
+
+	if err != nil {
+		return nil, fmt.Errorf("create recurring rule: %w", err)
+	}
+
+	return rule, nil
+}
+
+func (r *RecurringRuleRepository) GetByID(ctx context.Context, id int64) (*recurringrule.RecurringRule, error) {
+	query := `
+		SELECT id, title, description, status, recurrence_type, recurrence_config,
+		       start_date, end_date, created_at, updated_at
+		FROM recurring_rules WHERE id = $1
+	`
+
+	rule := &recurringrule.RecurringRule{}
+
+	err := r.pool.QueryRow(ctx, query, id).Scan(
+		&rule.ID, &rule.Title, &rule.Description, &rule.Status, &rule.RecurrenceType,
+		&rule.RecurrenceConfig, &rule.StartDate, &rule.EndDate,
+		&rule.CreatedAt, &rule.UpdatedAt,
+	)
+
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, recurringrule.ErrNotFound
+		}
+		return nil, fmt.Errorf("get recurring rule by id: %w", err)
+	}
+
+	return rule, nil
+}
+
+func (r *RecurringRuleRepository) List(ctx context.Context) ([]recurringrule.RecurringRule, error) {
+	query := `
+		SELECT id, title, description, status, recurrence_type, recurrence_config,
+		       start_date, end_date, created_at, updated_at
+		FROM recurring_rules ORDER BY created_at DESC
+	`
+
+	rows, err := r.pool.Query(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("list recurring rules: %w", err)
+	}
+	defer rows.Close()
+
+	var rules []recurringrule.RecurringRule
+
+	for rows.Next() {
+		var rule recurringrule.RecurringRule
+
+		err := rows.Scan(
+			&rule.ID, &rule.Title, &rule.Description, &rule.Status, &rule.RecurrenceType,
+			&rule.RecurrenceConfig, &rule.StartDate, &rule.EndDate,
+			&rule.CreatedAt, &rule.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("scan recurring rule: %w", err)
+		}
+
+		rules = append(rules, rule)
+	}
+
+	return rules, nil
+}
+
+func (r *RecurringRuleRepository) Delete(ctx context.Context, id int64) error {
+	query := `DELETE FROM recurring_rules WHERE id = $1`
+
+	cmdTag, err := r.pool.Exec(ctx, query, id)
+	if err != nil {
+		return fmt.Errorf("delete recurring rule: %w", err)
+	}
+
+	if cmdTag.RowsAffected() == 0 {
+		return recurringrule.ErrNotFound
+	}
+
+	return nil
+}
+
+func (r *RecurringRuleRepository) Update(ctx context.Context, rule *recurringrule.RecurringRule) (*recurringrule.RecurringRule, error) {
+	query := `
+		UPDATE recurring_rules SET
+			title = $1, description = $2, status = $3, recurrence_type = $4,
+			recurrence_config = $5, start_date = $6, end_date = $7, updated_at = $8
+		WHERE id = $9
+	`
+
+	cmdTag, err := r.pool.Exec(ctx, query,
+		rule.Title, rule.Description, rule.Status, rule.RecurrenceType,
+		rule.RecurrenceConfig, rule.StartDate, rule.EndDate, rule.UpdatedAt, rule.ID,
+	)
+
+	if err != nil {
+		return nil, fmt.Errorf("update recurring rule: %w", err)
+	}
+
+	if cmdTag.RowsAffected() == 0 {
+		return nil, recurringrule.ErrNotFound
+	}
+
+	return rule, nil
+}
+
+func (r *RecurringRuleRepository) UpdateStatus(ctx context.Context, id int64, status recurringrule.Status) error {
+	query := `UPDATE recurring_rules SET status = $1, updated_at = $2 WHERE id = $3`
+
+	cmdTag, err := r.pool.Exec(ctx, query, status, time.Now(), id)
+	if err != nil {
+		return fmt.Errorf("update recurring rule: %w", err)
+	}
+
+	if cmdTag.RowsAffected() == 0 {
+		return recurringrule.ErrNotFound
+	}
+
+	return nil
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\repository\postgres\task_repository.go
+Размер: 3,234 байт
+────────────────────────────────────────────────────────────────────────────────
+package postgres
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type TaskRepository struct {
+	pool *pgxpool.Pool
+}
+
+func New(pool *pgxpool.Pool) *TaskRepository {
+	return &TaskRepository{pool: pool}
+}
+
+func (r *TaskRepository) Create(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error) {
+	query := `
+		INSERT INTO tasks (title, description, status, created_at, updated_at, recurring_rule_id, generation_date)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id
+	`
+
+	err := r.pool.QueryRow(ctx, query,
+		task.Title, task.Description, task.Status, task.CreatedAt, task.UpdatedAt,
+		task.RecurringRuleID, task.GenerationDate,
+	).Scan(&task.ID)
+
+	if err != nil {
+		return nil, fmt.Errorf("create task: %w", err)
+	}
+
+	return task, nil
+}
+
+func (r *TaskRepository) GetByID(ctx context.Context, id int64) (*taskdomain.Task, error) {
+	query := `SELECT id, title, description, status, created_at, updated_at, recurring_rule_id, generation_date 
+	          FROM tasks WHERE id = $1`
+
+	var task taskdomain.Task
+	err := r.pool.QueryRow(ctx, query, id).Scan(
+		&task.ID, &task.Title, &task.Description, &task.Status,
+		&task.CreatedAt, &task.UpdatedAt, &task.RecurringRuleID, &task.GenerationDate,
+	)
+
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, taskdomain.ErrNotFound
+		}
+		return nil, fmt.Errorf("get task by id: %w", err)
+	}
+
+	return &task, nil
+}
+
+func (r *TaskRepository) Update(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error) {
+	query := `
+		UPDATE tasks SET 
+			title = $1, description = $2, status = $3, updated_at = $4,
+			recurring_rule_id = $5, generation_date = $6
+		WHERE id = $7
+	`
+
+	cmdTag, err := r.pool.Exec(ctx, query,
+		task.Title, task.Description, task.Status, task.UpdatedAt,
+		task.RecurringRuleID, task.GenerationDate, task.ID,
+	)
+
+	if err != nil {
+		return nil, fmt.Errorf("update task: %w", err)
+	}
+
+	if cmdTag.RowsAffected() == 0 {
+		return nil, taskdomain.ErrNotFound
+	}
+
+	return task, nil
+}
+
+func (r *TaskRepository) Delete(ctx context.Context, id int64) error {
+	query := `DELETE FROM tasks WHERE id = $1`
+
+	cmdTag, err := r.pool.Exec(ctx, query, id)
+	if err != nil {
+		return fmt.Errorf("delete task: %w", err)
+	}
+
+	if cmdTag.RowsAffected() == 0 {
+		return taskdomain.ErrNotFound
+	}
+
+	return nil
+}
+
+func (r *TaskRepository) List(ctx context.Context) ([]taskdomain.Task, error) {
+	query := `SELECT id, title, description, status, created_at, updated_at, recurring_rule_id, generation_date 
+	          FROM tasks ORDER BY created_at DESC`
+
+	rows, err := r.pool.Query(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("list tasks: %w", err)
+	}
+	defer rows.Close()
+
+	var tasks []taskdomain.Task
+	for rows.Next() {
+		var task taskdomain.Task
+		err := rows.Scan(
+			&task.ID, &task.Title, &task.Description, &task.Status,
+			&task.CreatedAt, &task.UpdatedAt, &task.RecurringRuleID, &task.GenerationDate,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("scan task: %w", err)
+		}
+		tasks = append(tasks, task)
+	}
+
+	return tasks, nil
+}
+
+
+================================================================================
+📁 ПАПКА: Hellcen/internal\transport/
+================================================================================
+
+================================================================================
+📁 ПАПКА: Hellcen/internal\transport\http/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\router.go
+Размер: 2,495 байт
+────────────────────────────────────────────────────────────────────────────────
+package transporthttp
+
+import (
+	"example.com/taskservice/internal/transport/http/middleware"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"net/http"
+
+	"github.com/gorilla/mux"
+
+	swaggerdocs "example.com/taskservice/internal/transport/http/docs"
+	httphandlers "example.com/taskservice/internal/transport/http/handlers"
+)
+
+func NewRouter(
+	taskHandler *httphandlers.TaskHandler,
+	recurringRuleHandler *httphandlers.RecurringHandler,
+	docsHandler *swaggerdocs.Handler,
+) *mux.Router {
+	router := mux.NewRouter().StrictSlash(true)
+
+	router.Handle("/metrics", promhttp.Handler()).Methods(http.MethodGet)
+
+	// Health check
+	router.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	}).Methods(http.MethodGet)
+
+	router.HandleFunc("/swagger/openapi.json", docsHandler.ServeSpec).Methods(http.MethodGet)
+	router.HandleFunc("/swagger/", docsHandler.ServeUI).Methods(http.MethodGet)
+	router.HandleFunc("/swagger", docsHandler.RedirectToUI).Methods(http.MethodGet)
+
+	api := router.PathPrefix("/api/v1").Subrouter()
+
+	api.HandleFunc("/tasks", middleware.PromMiddleware(taskHandler.Create)).Methods(http.MethodPost)
+	api.HandleFunc("/tasks", middleware.PromMiddleware(taskHandler.List)).Methods(http.MethodGet)
+	api.HandleFunc("/tasks/{id:[0-9]+}", middleware.PromMiddleware(taskHandler.GetByID)).Methods(http.MethodGet)
+	api.HandleFunc("/tasks/{id:[0-9]+}", middleware.PromMiddleware(taskHandler.Update)).Methods(http.MethodPut)
+	api.HandleFunc("/tasks/{id:[0-9]+}", middleware.PromMiddleware(taskHandler.Delete)).Methods(http.MethodDelete)
+
+	//Recurring handlers
+	api.HandleFunc("/recurringrule-rules", middleware.PromMiddleware(recurringRuleHandler.Create)).Methods(http.MethodPost)
+	api.HandleFunc("/recurringrule-rules", middleware.PromMiddleware(recurringRuleHandler.List)).Methods(http.MethodGet)
+	api.HandleFunc("/recurringrule-rules/{id:[0-9]+}", middleware.PromMiddleware(recurringRuleHandler.GetByID)).Methods(http.MethodGet)
+	api.HandleFunc("/recurringrule-rules/{id:[0-9]+}", middleware.PromMiddleware(recurringRuleHandler.Delete)).Methods(http.MethodDelete)
+	api.HandleFunc("/recurringrule-rules/{id:[0-9]+}", middleware.PromMiddleware(recurringRuleHandler.Update)).Methods(http.MethodPut)
+	api.HandleFunc("/recurringrule-rules/{id:[0-9]+}/status", middleware.PromMiddleware(recurringRuleHandler.UpdateStatus)).Methods(http.MethodPatch)
+
+	return router
+}
+
+
+================================================================================
+📁 ПАПКА: Hellcen/internal\transport\http\docs/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\docs\handler.go
+Размер: 1,779 байт
+────────────────────────────────────────────────────────────────────────────────
+package docs
+
+import (
+	"embed"
+	"net/http"
+)
+
+//go:embed openapi.json
+var openAPISpec embed.FS
+
+type Handler struct {
+	spec []byte
+}
+
+func NewHandler() *Handler {
+	spec, err := openAPISpec.ReadFile("openapi.json")
+	if err != nil {
+		panic(err)
+	}
+
+	return &Handler{spec: spec}
+}
+
+func (h *Handler) ServeSpec(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+
+	_, _ = w.Write(h.spec)
+}
+
+func (h *Handler) ServeUI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+
+	_, _ = w.Write([]byte(swaggerUIHTML))
+}
+
+func (h *Handler) RedirectToUI(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "/swagger/", http.StatusMovedPermanently)
+}
+
+var swaggerUIHTML = []byte(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Task Service Swagger</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+  <style>
+    body { margin: 0; background: #f6f7fb; }
+    #swagger-ui { max-width: 1440px; margin: 0 auto; }
+  </style>
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js" crossorigin></script>
+  <script>
+    window.onload = function() {
+      window.ui = SwaggerUIBundle({
+        url: '/swagger/openapi.json',
+        dom_id: '#swagger-ui',
+        deepLinking: true,
+        presets: [SwaggerUIBundle.presets.apis],
+        layout: 'BaseLayout'
+      });
+    };
+  </script>
+</body>
+</html>`)
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\docs\openapi.json
+Размер: 15,867 байт
+────────────────────────────────────────────────────────────────────────────────
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Task Service API",
+    "version": "1.0.0",
+    "description": "CRUD API for tasks and recurring rules built with clean architecture."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8080"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Tasks",
+      "description": "Operations with tasks"
+    },
+    {
+      "name": "Recurring Rules",
+      "description": "Operations with recurring rules for periodic tasks"
+    }
+  ],
+  "paths": {
+    "/api/v1/tasks": {
+      "get": {
+        "tags": ["Tasks"],
+        "summary": "List tasks",
+        "responses": {
+          "200": {
+            "description": "Task list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/Task" }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["Tasks"],
+        "summary": "Create task",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateTaskRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created task",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Task" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/api/v1/tasks/{id}": {
+      "get": {
+        "tags": ["Tasks"],
+        "summary": "Get task by ID",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Task",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Task" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "put": {
+        "tags": ["Tasks"],
+        "summary": "Update task",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/UpdateTaskRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated task",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Task" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["Tasks"],
+        "summary": "Delete task",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "responses": {
+          "204": { "description": "Deleted" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/v1/recurringrule-rules": {
+      "get": {
+        "tags": ["Recurring Rules"],
+        "summary": "List all recurring rules",
+        "responses": {
+          "200": {
+            "description": "List of recurring rules",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/RecurringRule" }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["Recurring Rules"],
+        "summary": "Create recurring rule",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateRecurringRuleRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created recurring rule",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/RecurringRule" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/api/v1/recurringrule-rules/{id}": {
+      "get": {
+        "tags": ["Recurring Rules"],
+        "summary": "Get recurring rule by ID",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Recurring rule",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/RecurringRule" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "put": {
+        "tags": ["Recurring Rules"],
+        "summary": "Update recurring rule",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/UpdateRecurringRuleRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated recurring rule",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/RecurringRule" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["Recurring Rules"],
+        "summary": "Delete recurring rule",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "responses": {
+          "204": { "description": "Deleted" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/v1/recurringrule-rules/{id}/status": {
+      "patch": {
+        "tags": ["Recurring Rules"],
+        "summary": "Update recurring rule status",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["status"],
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": ["active", "paused", "archived"],
+                    "example": "paused"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": { "description": "Status updated" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    }
+  },
+  "components": {
+    "responses": {
+      "BadRequest": {
+        "description": "Bad request",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Resource not found",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "CreateTaskRequest": {
+        "type": "object",
+        "required": ["title"],
+        "properties": {
+          "title": {
+            "type": "string",
+            "example": "Prepare release"
+          },
+          "description": {
+            "type": "string",
+            "example": "Collect release notes and check migrations"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["new", "in_progress", "done"],
+            "example": "new"
+          }
+        }
+      },
+      "UpdateTaskRequest": {
+        "type": "object",
+        "required": ["title", "status"],
+        "properties": {
+          "title": {
+            "type": "string",
+            "example": "Prepare release"
+          },
+          "description": {
+            "type": "string",
+            "example": "Collect release notes and check migrations"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["new", "in_progress", "done"],
+            "example": "in_progress"
+          }
+        }
+      },
+      "Task": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "format": "int64", "example": 1 },
+          "title": { "type": "string", "example": "Prepare release" },
+          "description": {
+            "type": "string",
+            "example": "Collect release notes and check migrations"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["new", "in_progress", "done"],
+            "example": "new"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-03-24T00:00:00Z"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-03-24T00:00:00Z"
+          }
+        }
+      },
+      "CreateRecurringRuleRequest": {
+        "type": "object",
+        "required": ["title", "recurrence_type", "config", "start_date"],
+        "properties": {
+          "title": {
+            "type": "string",
+            "example": "Daily health check"
+          },
+          "description": {
+            "type": "string",
+            "example": "Check system health every day"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["active", "paused", "archived"],
+            "example": "active"
+          },
+          "recurrence_type": {
+            "type": "string",
+            "enum": ["daily", "monthly", "evenodd", "specific"],
+            "example": "daily"
+          },
+          "config": {
+            "type": "object",
+            "description": "Configuration object depends on recurrence_type",
+            "oneOf": [
+              {
+                "title": "daily",
+                "properties": {
+                  "interval_days": { "type": "integer", "minimum": 1, "example": 2 }
+                }
+              },
+              {
+                "title": "monthly",
+                "properties": {
+                  "day_of_month": { "type": "integer", "minimum": 1, "maximum": 30, "example": 5 }
+                }
+              },
+              {
+                "title": "evenodd",
+                "properties": {
+                  "parity": { "type": "string", "enum": ["even", "odd"], "example": "even" }
+                }
+              },
+              {
+                "title": "specific",
+                "properties": {
+                  "dates": {
+                    "type": "array",
+                    "items": { "type": "string", "format": "date-time" },
+                    "example": ["2026-04-15T00:00:00Z", "2026-05-01T00:00:00Z"]
+                  }
+                }
+              }
+            ]
+          },
+          "start_date": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-04-12T00:00:00Z"
+          },
+          "end_date": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-12-31T00:00:00Z"
+          }
+        }
+      },
+      "UpdateRecurringRuleRequest": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "example": "Updated daily health check"
+          },
+          "description": {
+            "type": "string",
+            "example": "Updated description"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["active", "paused", "archived"],
+            "example": "paused"
+          },
+          "recurrence_type": {
+            "type": "string",
+            "enum": ["daily", "monthly", "evenodd", "specific"],
+            "example": "daily"
+          },
+          "config": {
+            "type": "object",
+            "description": "Configuration object depends on recurrence_type"
+          },
+          "start_date": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-05-01T00:00:00Z"
+          },
+          "end_date": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-12-31T00:00:00Z"
+          }
+        }
+      },
+      "RecurringRule": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "format": "int64", "example": 1 },
+          "title": { "type": "string", "example": "Daily health check" },
+          "description": { "type": "string", "example": "Check system health every day" },
+          "status": {
+            "type": "string",
+            "enum": ["active", "paused", "archived"],
+            "example": "active"
+          },
+          "recurrence_type": {
+            "type": "string",
+            "enum": ["daily", "monthly", "evenodd", "specific"],
+            "example": "daily"
+          },
+          "config": {
+            "type": "object",
+            "description": "Configuration object depends on recurrence_type",
+            "example": { "interval_days": 2 }
+          },
+          "start_date": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-04-12T00:00:00Z"
+          },
+          "end_date": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-12-31T00:00:00Z"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-04-12T10:00:00Z"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-04-12T10:30:00Z"
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": { "type": "string", "example": "recurring rule not found" }
+        }
+      }
+    }
+  }
+}
+
+================================================================================
+📁 ПАПКА: Hellcen/internal\transport\http\handlers/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\handlers\dto.go
+Размер: 2,473 байт
+────────────────────────────────────────────────────────────────────────────────
+package handlers
+
+import (
+	"encoding/json"
+	"example.com/taskservice/internal/domain/recurringrule"
+	"time"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type taskMutationDTO struct {
+	Title       string            `json:"title"`
+	Description string            `json:"description"`
+	Status      taskdomain.Status `json:"status"`
+}
+
+type TaskDTO struct {
+	ID          int64             `json:"id"`
+	Title       string            `json:"title"`
+	Description string            `json:"description"`
+	Status      taskdomain.Status `json:"status"`
+	CreatedAt   time.Time         `json:"created_at"`
+	UpdatedAt   time.Time         `json:"updated_at"`
+}
+
+type RecurringRuleCreateRequest struct {
+	Title          string                       `json:"title"`
+	Description    string                       `json:"description"`
+	Status         recurringrule.Status         `json:"status,omitempty"`
+	RecurrenceType recurringrule.RecurrenceType `json:"recurrence_type"`
+	Config         json.RawMessage              `json:"config"`
+	StartDate      time.Time                    `json:"start_date"`
+	EndDate        *time.Time                   `json:"end_date,omitempty"`
+}
+
+type RecurringRuleUpdateRequest struct {
+	Title          string                       `json:"title,omitempty"`
+	Description    string                       `json:"description,omitempty"`
+	Status         recurringrule.Status         `json:"status,omitempty"`
+	RecurrenceType recurringrule.RecurrenceType `json:"recurrence_type,omitempty"`
+	Config         json.RawMessage              `json:"config,omitempty"`
+	StartDate      time.Time                    `json:"start_date,omitempty"`
+	EndDate        *time.Time                   `json:"end_date,omitempty"`
+}
+
+type RecurringRuleResponse struct {
+	ID             int64                        `json:"id"`
+	Title          string                       `json:"title"`
+	Description    string                       `json:"description"`
+	Status         recurringrule.Status         `json:"status"`
+	RecurrenceType recurringrule.RecurrenceType `json:"recurrence_type"`
+	Config         json.RawMessage              `json:"config"`
+	StartDate      time.Time                    `json:"start_date"`
+	EndDate        *time.Time                   `json:"end_date,omitempty"`
+	CreatedAt      time.Time                    `json:"created_at"`
+	UpdatedAt      time.Time                    `json:"updated_at"`
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\handlers\recurring_handler.go
+Размер: 3,271 байт
+────────────────────────────────────────────────────────────────────────────────
+package handlers
+
+import (
+	"errors"
+	"example.com/taskservice/internal/domain/recurringrule"
+	"net/http"
+	"strconv"
+
+	"github.com/gorilla/mux"
+
+	recurringusecase "example.com/taskservice/internal/usecase/recurring"
+)
+
+type RecurringHandler struct {
+	usecase recurringusecase.Usecase
+}
+
+func NewRecurringHandler(usecase recurringusecase.Usecase) *RecurringHandler {
+	return &RecurringHandler{usecase: usecase}
+}
+
+func (h *RecurringHandler) Create(w http.ResponseWriter, r *http.Request) {
+	var req RecurringRuleCreateRequest
+
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	created, err := h.usecase.Create(r.Context(), toCreateInputDTO(req))
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, toRecurringRuleResponse(created))
+}
+
+func (h *RecurringHandler) GetByID(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id, err := strconv.ParseInt(vars["id"], 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, errors.New("invalid id"))
+		return
+	}
+
+	rule, err := h.usecase.GetByID(r.Context(), id)
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, toRecurringRuleResponse(rule))
+}
+
+func (h *RecurringHandler) List(w http.ResponseWriter, r *http.Request) {
+	rules, err := h.usecase.List(r.Context())
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	response := make([]RecurringRuleResponse, 0, len(rules))
+	for i := range rules {
+		response = append(response, toRecurringRuleResponse(&rules[i]))
+	}
+
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (h *RecurringHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id, err := strconv.ParseInt(vars["id"], 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, errors.New("invalid id"))
+		return
+	}
+
+	if err := h.usecase.Delete(r.Context(), id); err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *RecurringHandler) Update(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id, err := strconv.ParseInt(vars["id"], 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, errors.New("invalid id"))
+		return
+	}
+
+	var req RecurringRuleUpdateRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	updated, err := h.usecase.Update(r.Context(), id, toUpdateInputDTO(req))
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, toRecurringRuleResponse(updated))
+}
+
+func (h *RecurringHandler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id, err := strconv.ParseInt(vars["id"], 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, errors.New("invalid id"))
+		return
+	}
+
+	var req struct {
+		Status recurringrule.Status `json:"status"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	if err := h.usecase.UpdateStatus(r.Context(), id, req.Status); err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\handlers\recurring_task_mapper.go
+Размер: 1,387 байт
+────────────────────────────────────────────────────────────────────────────────
+package handlers
+
+import (
+	"example.com/taskservice/internal/domain/recurringrule"
+	recurringusecase "example.com/taskservice/internal/usecase/recurring"
+)
+
+func toCreateInputDTO(req RecurringRuleCreateRequest) recurringusecase.CreateInputDTO {
+	return recurringusecase.CreateInputDTO{
+		Title:          req.Title,
+		Description:    req.Description,
+		Status:         req.Status,
+		RecurrenceType: req.RecurrenceType,
+		Config:         req.Config,
+		StartDate:      req.StartDate,
+		EndDate:        req.EndDate,
+	}
+}
+
+func toUpdateInputDTO(req RecurringRuleUpdateRequest) recurringusecase.UpdateInputDTO {
+	return recurringusecase.UpdateInputDTO{
+		Title:          req.Title,
+		Description:    req.Description,
+		Status:         req.Status,
+		RecurrenceType: req.RecurrenceType,
+		Config:         req.Config,
+		StartDate:      req.StartDate,
+		EndDate:        req.EndDate,
+	}
+}
+
+func toRecurringRuleResponse(rule *recurringrule.RecurringRule) RecurringRuleResponse {
+	return RecurringRuleResponse{
+		ID:             rule.ID,
+		Title:          rule.Title,
+		Description:    rule.Description,
+		Status:         rule.Status,
+		RecurrenceType: rule.RecurrenceType,
+		Config:         rule.RecurrenceConfig,
+		StartDate:      rule.StartDate,
+		EndDate:        rule.EndDate,
+		CreatedAt:      rule.CreatedAt,
+		UpdatedAt:      rule.UpdatedAt,
+	}
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\handlers\task_handler.go
+Размер: 3,773 байт
+────────────────────────────────────────────────────────────────────────────────
+package handlers
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strconv"
+
+	"github.com/gorilla/mux"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+	taskusecase "example.com/taskservice/internal/usecase/task"
+)
+
+type TaskHandler struct {
+	usecase taskusecase.Usecase
+}
+
+func NewTaskHandler(usecase taskusecase.Usecase) *TaskHandler {
+	return &TaskHandler{usecase: usecase}
+}
+
+func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
+	var req taskMutationDTO
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	created, err := h.usecase.Create(r.Context(), taskusecase.CreateInput{
+		Title:       req.Title,
+		Description: req.Description,
+		Status:      req.Status,
+	})
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, NewTaskDTO(created))
+}
+
+func (h *TaskHandler) GetByID(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	task, err := h.usecase.GetByID(r.Context(), id)
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, NewTaskDTO(task))
+}
+
+func (h *TaskHandler) Update(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	var req taskMutationDTO
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	updated, err := h.usecase.Update(r.Context(), id, taskusecase.UpdateInput{
+		Title:       req.Title,
+		Description: req.Description,
+		Status:      req.Status,
+	})
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, NewTaskDTO(updated))
+}
+
+func (h *TaskHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	if err := h.usecase.Delete(r.Context(), id); err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
+	tasks, err := h.usecase.List(r.Context())
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	response := make([]TaskDTO, 0, len(tasks))
+	for i := range tasks {
+		response = append(response, NewTaskDTO(&tasks[i]))
+	}
+
+	writeJSON(w, http.StatusOK, response)
+}
+
+func getIDFromRequest(r *http.Request) (int64, error) {
+	rawID := mux.Vars(r)["id"]
+	if rawID == "" {
+		return 0, errors.New("missing task id")
+	}
+
+	id, err := strconv.ParseInt(rawID, 10, 64)
+	if err != nil {
+		return 0, errors.New("invalid task id")
+	}
+
+	if id <= 0 {
+		return 0, errors.New("invalid task id")
+	}
+
+	return id, nil
+}
+
+func decodeJSON(r *http.Request, dst any) error {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+
+	if err := decoder.Decode(dst); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func writeUsecaseError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, taskdomain.ErrNotFound):
+		writeError(w, http.StatusNotFound, err)
+	case errors.Is(err, taskusecase.ErrInvalidInput):
+		writeError(w, http.StatusBadRequest, err)
+	default:
+		writeError(w, http.StatusInternalServerError, err)
+	}
+}
+
+func writeError(w http.ResponseWriter, status int, err error) {
+	writeJSON(w, status, map[string]string{
+		"error": err.Error(),
+	})
+}
+
+func writeJSON(w http.ResponseWriter, status int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\handlers\task_mapper.go
+Размер: 350 байт
+────────────────────────────────────────────────────────────────────────────────
+package handlers
+
+import (
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+func NewTaskDTO(task *taskdomain.Task) TaskDTO {
+	return TaskDTO{
+		ID:          task.ID,
+		Title:       task.Title,
+		Description: task.Description,
+		Status:      task.Status,
+		CreatedAt:   task.CreatedAt,
+		UpdatedAt:   task.UpdatedAt,
+	}
+}
+
+
+================================================================================
+📁 ПАПКА: Hellcen/internal\transport\http\middleware/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\middleware\promMiddleware.go
+Размер: 619 байт
+────────────────────────────────────────────────────────────────────────────────
+package middleware
+
+import (
+	"example.com/taskservice/metrics"
+	"net/http"
+	"time"
+)
+
+func PromMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+
+		rw := &metrics.ResponseWriter{ResponseWriter: w, StatusCode: http.StatusOK}
+		next(rw, r)
+
+		duration := time.Since(start).Seconds()
+
+		// Сохраняем метрики
+		metrics.HttpRequestsTotal.WithLabelValues(r.Method, r.URL.Path, http.StatusText(rw.StatusCode)).Inc()
+		metrics.HttpRequestDuration.WithLabelValues(r.Method, r.URL.Path).Observe(duration)
+	}
+}
+
+
+================================================================================
+📁 ПАПКА: Hellcen/internal\usecase/
+================================================================================
+
+================================================================================
+📁 ПАПКА: Hellcen/internal\usecase\recurring/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\recurring\ports.go
+Размер: 1,650 байт
+────────────────────────────────────────────────────────────────────────────────
+package recurring
+
+import (
+	"context"
+	"encoding/json"
+	"time"
+
+	"example.com/taskservice/internal/domain/recurringrule"
+)
+
+type Repository interface {
+	Create(ctx context.Context, rule *recurringrule.RecurringRule) (*recurringrule.RecurringRule, error)
+	GetByID(ctx context.Context, id int64) (*recurringrule.RecurringRule, error)
+	List(ctx context.Context) ([]recurringrule.RecurringRule, error)
+	Delete(ctx context.Context, id int64) error
+	Update(ctx context.Context, rule *recurringrule.RecurringRule) (*recurringrule.RecurringRule, error)
+	UpdateStatus(ctx context.Context, id int64, status recurringrule.Status) error
+}
+
+type Usecase interface {
+	Create(ctx context.Context, input CreateInputDTO) (*recurringrule.RecurringRule, error)
+	GetByID(ctx context.Context, id int64) (*recurringrule.RecurringRule, error)
+	List(ctx context.Context) ([]recurringrule.RecurringRule, error)
+	Delete(ctx context.Context, id int64) error
+	Update(ctx context.Context, id int64, input UpdateInputDTO) (*recurringrule.RecurringRule, error)
+	UpdateStatus(ctx context.Context, id int64, status recurringrule.Status) error
+}
+
+type CreateInputDTO struct {
+	Title          string
+	Description    string
+	Status         recurringrule.Status
+	RecurrenceType recurringrule.RecurrenceType
+	Config         json.RawMessage
+	StartDate      time.Time
+	EndDate        *time.Time
+}
+
+type UpdateInputDTO struct {
+	Title          string
+	Description    string
+	Status         recurringrule.Status
+	RecurrenceType recurringrule.RecurrenceType
+	Config         json.RawMessage
+	StartDate      time.Time
+	EndDate        *time.Time
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\recurring\service.go
+Размер: 2,893 байт
+────────────────────────────────────────────────────────────────────────────────
+package recurring
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"example.com/taskservice/internal/domain/recurringrule"
+)
+
+var (
+	ErrInvalidInput = errors.New("invalid input")
+)
+
+type Service struct {
+	repo Repository
+	now  func() time.Time
+}
+
+func NewService(repo Repository) *Service {
+	return &Service{
+		repo: repo,
+		now:  func() time.Time { return time.Now().UTC() },
+	}
+}
+
+func (s *Service) Create(ctx context.Context, input CreateInputDTO) (*recurringrule.RecurringRule, error) {
+	validated, err := ValidateCreateInput(input)
+	if err != nil {
+		return nil, err
+	}
+
+	now := s.now()
+
+	rule := &recurringrule.RecurringRule{
+		Title:            validated.Title,
+		Description:      validated.Description,
+		Status:           validated.Status,
+		RecurrenceType:   validated.RecurrenceType,
+		RecurrenceConfig: validated.Config,
+		StartDate:        validated.StartDate,
+		EndDate:          validated.EndDate,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+
+	created, err := s.repo.Create(ctx, rule)
+	if err != nil {
+		return nil, fmt.Errorf("create rule: %w", err)
+	}
+
+	return created, nil
+}
+
+func (s *Service) GetByID(ctx context.Context, id int64) (*recurringrule.RecurringRule, error) {
+	if id <= 0 {
+		return nil, fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+	}
+
+	return s.repo.GetByID(ctx, id)
+}
+
+func (s *Service) List(ctx context.Context) ([]recurringrule.RecurringRule, error) {
+	return s.repo.List(ctx)
+}
+
+func (s *Service) Delete(ctx context.Context, id int64) error {
+	if id <= 0 {
+		return fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+	}
+
+	return s.repo.Delete(ctx, id)
+}
+
+func (s *Service) Update(ctx context.Context, id int64, input UpdateInputDTO) (*recurringrule.RecurringRule, error) {
+	if id <= 0 {
+		return nil, fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+	}
+
+	existing, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	validated, err := ValidateUpdateInput(input, *existing)
+	if err != nil {
+		return nil, err
+	}
+
+	existing.Title = validated.Title
+	existing.Description = validated.Description
+	existing.Status = validated.Status
+	existing.RecurrenceType = validated.RecurrenceType
+	existing.RecurrenceConfig = validated.Config
+	existing.StartDate = validated.StartDate
+	existing.EndDate = validated.EndDate
+	existing.UpdatedAt = s.now()
+
+	updated, err := s.repo.Update(ctx, existing)
+	if err != nil {
+		return nil, fmt.Errorf("update rule: %w", err)
+	}
+
+	return updated, nil
+}
+
+func (s *Service) UpdateStatus(ctx context.Context, id int64, status recurringrule.Status) error {
+	if id <= 0 {
+		return fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+	}
+
+	if !status.Valid() {
+		return fmt.Errorf("%w: invalid status", ErrInvalidInput)
+	}
+
+	return s.repo.UpdateStatus(ctx, id, status)
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\recurring\validator.go
+Размер: 3,901 байт
+────────────────────────────────────────────────────────────────────────────────
+package recurring
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+
+	"example.com/taskservice/internal/domain/recurringrule"
+)
+
+func ValidateCreateInput(input CreateInputDTO) (CreateInputDTO, error) {
+	input.Title = strings.TrimSpace(input.Title)
+	input.Description = strings.TrimSpace(input.Description)
+
+	if input.Title == "" {
+		return CreateInputDTO{}, fmt.Errorf("%w: title is required", ErrInvalidInput)
+	}
+
+	if input.Status == "" {
+		input.Status = recurringrule.StatusActive
+	}
+
+	if !input.Status.Valid() {
+		return CreateInputDTO{}, fmt.Errorf("%w: invalid status", ErrInvalidInput)
+	}
+
+	if !input.RecurrenceType.Valid() {
+		return CreateInputDTO{}, fmt.Errorf("%w: invalid recurrence_type", ErrInvalidInput)
+	}
+
+	// Валидация конфигурации в зависимости от типа
+	if err := validateConfig(input.RecurrenceType, input.Config); err != nil {
+		return CreateInputDTO{}, err
+	}
+
+	if input.StartDate.IsZero() {
+		input.StartDate = time.Now().UTC()
+	}
+
+	return input, nil
+}
+
+func ValidateUpdateInput(input UpdateInputDTO, existing recurringrule.RecurringRule) (UpdateInputDTO, error) {
+	input.Title = strings.TrimSpace(input.Title)
+	input.Description = strings.TrimSpace(input.Description)
+
+	if input.Title == "" {
+		input.Title = existing.Title
+	}
+
+	if input.Description == "" {
+		input.Description = existing.Description
+	}
+
+	if input.Status == "" {
+		input.Status = existing.Status
+	}
+
+	if !input.Status.Valid() {
+		return UpdateInputDTO{}, fmt.Errorf("%w: invalid status", ErrInvalidInput)
+	}
+
+	if input.RecurrenceType == "" {
+		input.RecurrenceType = existing.RecurrenceType
+	}
+
+	if !input.RecurrenceType.Valid() {
+		return UpdateInputDTO{}, fmt.Errorf("%w: invalid recurrence_type", ErrInvalidInput)
+	}
+
+	// Если конфиг не передан, используем существующий
+	if input.Config == nil {
+		input.Config = existing.RecurrenceConfig
+	} else {
+		if err := validateConfig(input.RecurrenceType, input.Config); err != nil {
+			return UpdateInputDTO{}, err
+		}
+	}
+
+	if input.StartDate.IsZero() {
+		input.StartDate = existing.StartDate
+	}
+
+	if input.EndDate == nil {
+		input.EndDate = existing.EndDate
+	}
+
+	return input, nil
+}
+
+func validateConfig(recurrenceType recurringrule.RecurrenceType, config json.RawMessage) error {
+	switch recurrenceType {
+	case recurringrule.TypeDaily:
+		var cfg recurringrule.DailyConfig
+		if err := json.Unmarshal(config, &cfg); err != nil {
+			return fmt.Errorf("%w: invalid daily config: %v", ErrInvalidInput, err)
+		}
+		if cfg.IntervalDays <= 0 {
+			return fmt.Errorf("%w: interval_days must be > 0 for daily recurrence", ErrInvalidInput)
+		}
+
+	case recurringrule.TypeMonthly:
+		var cfg recurringrule.MonthlyConfig
+		if err := json.Unmarshal(config, &cfg); err != nil {
+			return fmt.Errorf("%w: invalid monthly config: %v", ErrInvalidInput, err)
+		}
+		if cfg.DayOfMonth < 1 || cfg.DayOfMonth > 30 {
+			return fmt.Errorf("%w: day_of_month must be between 1 and 30", ErrInvalidInput)
+		}
+
+	case recurringrule.TypeEvenOdd:
+		var cfg recurringrule.EvenOddConfig
+		if err := json.Unmarshal(config, &cfg); err != nil {
+			return fmt.Errorf("%w: invalid evenodd config: %v", ErrInvalidInput, err)
+		}
+		if cfg.Parity != "even" && cfg.Parity != "odd" {
+			return fmt.Errorf("%w: parity must be 'even' or 'odd'", ErrInvalidInput)
+		}
+
+	case recurringrule.TypeSpecific:
+		var cfg recurringrule.SpecificConfig
+		if err := json.Unmarshal(config, &cfg); err != nil {
+			return fmt.Errorf("%w: invalid specific config: %v", ErrInvalidInput, err)
+		}
+		if len(cfg.Dates) == 0 {
+			return fmt.Errorf("%w: dates cannot be empty for specific recurrence", ErrInvalidInput)
+		}
+
+	default:
+		return fmt.Errorf("%w: unknown recurrence type", ErrInvalidInput)
+	}
+
+	return nil
+}
+
+
+================================================================================
+📁 ПАПКА: Hellcen/internal\usecase\task/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\task\errors.go
+Размер: 91 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import "errors"
+
+var ErrInvalidInput = errors.New("invalid task input")
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\task\ports.go
+Размер: 1,034 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import (
+	"context"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type Repository interface {
+	Create(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error)
+	GetByID(ctx context.Context, id int64) (*taskdomain.Task, error)
+	Update(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error)
+	Delete(ctx context.Context, id int64) error
+	List(ctx context.Context) ([]taskdomain.Task, error)
+}
+
+type Usecase interface {
+	Create(ctx context.Context, input CreateInput) (*taskdomain.Task, error)
+	GetByID(ctx context.Context, id int64) (*taskdomain.Task, error)
+	Update(ctx context.Context, id int64, input UpdateInput) (*taskdomain.Task, error)
+	Delete(ctx context.Context, id int64) error
+	List(ctx context.Context) ([]taskdomain.Task, error)
+}
+
+type CreateInput struct {
+	Title       string
+	Description string
+	Status      taskdomain.Status
+}
+
+type UpdateInput struct {
+	Title       string
+	Description string
+	Status      taskdomain.Status
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\task\service.go
+Размер: 2,861 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type Service struct {
+	repo Repository
+	now  func() time.Time
+}
+
+func NewService(repo Repository) *Service {
+	return &Service{
+		repo: repo,
+		now:  func() time.Time { return time.Now().UTC() },
+	}
+}
+
+func (s *Service) Create(ctx context.Context, input CreateInput) (*taskdomain.Task, error) {
+	normalized, err := validateCreateInput(input)
+	if err != nil {
+		return nil, err
+	}
+
+	model := &taskdomain.Task{
+		Title:       normalized.Title,
+		Description: normalized.Description,
+		Status:      normalized.Status,
+	}
+	now := s.now()
+	model.CreatedAt = now
+	model.UpdatedAt = now
+
+	created, err := s.repo.Create(ctx, model)
+	if err != nil {
+		return nil, err
+	}
+
+	return created, nil
+}
+
+func (s *Service) GetByID(ctx context.Context, id int64) (*taskdomain.Task, error) {
+	if id <= 0 {
+		return nil, fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+	}
+
+	return s.repo.GetByID(ctx, id)
+}
+
+func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (*taskdomain.Task, error) {
+	if id <= 0 {
+		return nil, fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+	}
+
+	normalized, err := validateUpdateInput(input)
+	if err != nil {
+		return nil, err
+	}
+
+	model := &taskdomain.Task{
+		ID:          id,
+		Title:       normalized.Title,
+		Description: normalized.Description,
+		Status:      normalized.Status,
+		UpdatedAt:   s.now(),
+	}
+
+	updated, err := s.repo.Update(ctx, model)
+	if err != nil {
+		return nil, err
+	}
+
+	return updated, nil
+}
+
+func (s *Service) Delete(ctx context.Context, id int64) error {
+	if id <= 0 {
+		return fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+	}
+
+	return s.repo.Delete(ctx, id)
+}
+
+func (s *Service) List(ctx context.Context) ([]taskdomain.Task, error) {
+	return s.repo.List(ctx)
+}
+
+func validateCreateInput(input CreateInput) (CreateInput, error) {
+	input.Title = strings.TrimSpace(input.Title)
+	input.Description = strings.TrimSpace(input.Description)
+
+	if input.Title == "" {
+		return CreateInput{}, fmt.Errorf("%w: title is required", ErrInvalidInput)
+	}
+
+	if input.Status == "" {
+		input.Status = taskdomain.StatusNew
+	}
+
+	if !input.Status.Valid() {
+		return CreateInput{}, fmt.Errorf("%w: invalid status", ErrInvalidInput)
+	}
+
+	return input, nil
+}
+
+func validateUpdateInput(input UpdateInput) (UpdateInput, error) {
+	input.Title = strings.TrimSpace(input.Title)
+	input.Description = strings.TrimSpace(input.Description)
+
+	if input.Title == "" {
+		return UpdateInput{}, fmt.Errorf("%w: title is required", ErrInvalidInput)
+	}
+
+	if !input.Status.Valid() {
+		return UpdateInput{}, fmt.Errorf("%w: invalid status", ErrInvalidInput)
+	}
+
+	return input, nil
+}
+
+
+================================================================================
+📁 ПАПКА: Hellcen/metrics/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: metrics\metrics.go
+Размер: 784 байт
+────────────────────────────────────────────────────────────────────────────────
+package metrics
+
+import (
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+)
+
+var (
+	HttpRequestsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "http_requests_total",
+			Help: "Total number of HTTP requests",
+		},
+		[]string{"method", "endpoint", "status"},
+	)
+
+	HttpRequestDuration = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "http_request_duration_seconds",
+			Help:    "Duration of HTTP requests",
+			Buckets: prometheus.DefBuckets,
+		},
+		[]string{"method", "endpoint"},
+	)
+
+	activeRecurringRules = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "active_recurring_rules_total",
+			Help: "Total number of active recurring rules",
+		},
+	)
+)
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: metrics\ports.go
+Размер: 229 байт
+────────────────────────────────────────────────────────────────────────────────
+package metrics
+
+import "net/http"
+
+type ResponseWriter struct {
+	http.ResponseWriter
+	StatusCode int
+}
+
+func (rw *ResponseWriter) WriteHeader(code int) {
+	rw.StatusCode = code
+	rw.ResponseWriter.WriteHeader(code)
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: metrics\service.go
+Размер: 549 байт
+────────────────────────────────────────────────────────────────────────────────
+package metrics
+
+import (
+	"context"
+	"example.com/taskservice/internal/domain/recurringrule"
+	"example.com/taskservice/internal/usecase/recurring"
+	"time"
+)
+
+func CollectMetrics(recurringUsecase recurring.Usecase) {
+	for {
+		rules, err := recurringUsecase.List(context.Background())
+		if err == nil {
+			activeCount := 0
+			for _, rule := range rules {
+				if rule.Status == recurringrule.StatusActive {
+					activeCount++
+				}
+			}
+			activeRecurringRules.Set(float64(activeCount))
+		}
+		time.Sleep(30 * time.Second)
+	}
+}
+
+
+================================================================================
+📁 ПАПКА: Hellcen/migrations/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: migrations\0001_create_recurring_tasks.up.sql
+Размер: 1,469 байт
+────────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS recurring_rules (
+                                               id BIGSERIAL PRIMARY KEY,
+                                               title TEXT NOT NULL,
+                                               description TEXT NOT NULL,
+                                               status TEXT NOT NULL CHECK (status IN ('active', 'paused', 'archived')),
+                                               recurrence_type TEXT NOT NULL CHECK (recurrence_type IN ('daily', 'monthly', 'evenodd', 'specific')),
+                                               recurrence_config JSONB NOT NULL,
+                                               start_date DATE NOT NULL,
+                                               end_date DATE,
+                                               created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                                               updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_recurring_rules_status ON recurring_rules(status);
+CREATE INDEX idx_recurring_rules_type ON recurring_rules(recurrence_type);
+CREATE INDEX idx_recurring_rules_config ON recurring_rules USING GIN (recurrence_config);
+
+ALTER TABLE tasks
+    ADD COLUMN IF NOT EXISTS recurring_rule_id BIGINT REFERENCES recurring_rules(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS generation_date DATE;
+
+CREATE INDEX IF NOT EXISTS idx_tasks_recurring_rule_id ON tasks(recurring_rule_id);
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: migrations\0001_create_tasks.up.sql
+Размер: 318 байт
+────────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS tasks (
+	id BIGSERIAL PRIMARY KEY,
+	title TEXT NOT NULL,
+	description TEXT NOT NULL DEFAULT '',
+	status TEXT NOT NULL,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks (status);
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: migrations\0001_down_recurring_tasks.down.sql
+Размер: 160 байт
+────────────────────────────────────────────────────────────────────────────────
+ALTER TABLE tasks
+    DROP COLUMN IF EXISTS recurring_rule_id,
+    DROP COLUMN IF EXISTS generation_date;
+
+DROP INDEX IF EXISTS idx_tasks_recurring_rule_id;
+
+================================================================================
+СТАТИСТИКА ЭКСПОРТА
+================================================================================
+Всего обработано файлов: 33
+Всего пропущено файлов: 2
+Общий размер выходного файла: 85,900 байт

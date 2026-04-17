@@ -1,0 +1,3038 @@
+================================================================================
+ЭКСПОРТ РЕПОЗИТОРИЯ: daniil3006
+Путь: C:\Users\vladk\Desktop\test\forks\daniil3006
+Дата экспорта: 2026-04-14 01:14:57
+================================================================================
+
+
+================================================================================
+📁 ПАПКА: daniil3006/
+================================================================================
+
+[ПРОПУЩЕН] .dockerignore (бинарный/служебный/слишком большой)
+
+[ПРОПУЩЕН] .gitignore (бинарный/служебный/слишком большой)
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: Dockerfile
+Размер: 414 байт
+────────────────────────────────────────────────────────────────────────────────
+FROM golang:1.23.0-alpine AS builder
+
+WORKDIR /src
+
+RUN apk add --no-cache ca-certificates
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/taskservice ./cmd/api
+
+FROM alpine:3.21
+
+WORKDIR /app
+
+RUN apk add --no-cache ca-certificates
+
+COPY --from=builder /out/taskservice /app/taskservice
+
+EXPOSE 8080
+
+CMD ["/app/taskservice"]
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: README.md
+Размер: 9,805 байт
+────────────────────────────────────────────────────────────────────────────────
+# Task Service
+
+Сервис для управления задачами с HTTP API на Go.
+
+## Требования
+
+- Go `1.23+`
+- Docker и Docker Compose
+
+## Быстрый запуск через Docker Compose
+
+```bash
+docker compose up --build
+```
+
+После запуска сервис будет доступен по адресу `http://localhost:8080`.
+
+Если `postgres` уже запускался ранее со старой схемой, пересоздай volume:
+
+```bash
+docker compose down -v
+docker compose up --build
+```
+
+Причина в том, что SQL-файлы из `migrations/` монтируются в `docker-entrypoint-initdb.d` и применяются только при инициализации пустого data volume.
+
+## Swagger
+
+Swagger UI:
+
+```text
+http://localhost:8080/swagger/
+```
+
+OpenAPI JSON:
+
+```text
+http://localhost:8080/swagger/openapi.json
+```
+
+## API
+
+Базовый префикс API:
+
+```text
+/api/v1
+```
+
+Обычные задачи:
+
+- `POST   /api/v1/tasks`
+- `POST /api/v1/tasks/batch`
+- `GET    /api/v1/tasks`
+- `GET    /api/v1/tasks/{id}`
+- `PUT    /api/v1/tasks/{id}`
+- `DELETE /api/v1/tasks/{id}`
+
+Шаблоны периодических задач:
+
+- `POST   /api/v1/task-templates`
+- `GET    /api/v1/task-templates`
+- `GET    /api/v1/task-templates/{id}`
+- `PUT    /api/v1/task-templates/{id}`
+- `DELETE /api/v1/task-templates/{id}`
+
+---
+
+## Реализация периодических задач
+
+### Общий подход
+
+Периодические задачи реализованы с помощью шаблона `task_templates`. Шаблон описывает расписание, а конкретные задачи генерируются на его основе и хранятся в той же таблице `tasks`.
+Данный подход позволяет не менять существующий API задач, и врач может работать с периодическими задачами так же как с обычными (менять статус, изменять, удалять через стандартный API)
+
+### Схема БД
+
+`tasks`
+- `id` - Первичный ключ
+- `title` - Название задачи
+- `description` - Описание задачи
+- `status` - Статус: `new`, `in_progress`, `done`
+- `template_id` - Ссылка на шаблон. `NULL` для обычных задач. При удалении шаблона обнуляется автоматически (`ON DELETE SET NULL`)
+- `scheduled_for` - Дата на которую создана задача. `NULL` для обычных задач
+- `created_at` - Дата создания записи
+- `updated_at` - Дата последнего обновления записи
+
+`task_templates`
+
+- `id` - Первичный ключ
+- `title` - Название задачи
+- `description` - Описание задачи
+- `schedule_type` - Тип расписания
+- `every_n_days` - Шаг в днях. Только для `daily`
+- `day_of_month` - Число месяца от 1 до 30. Только для `monthly_day`
+- `start_date` - Дата начала генерации задач
+- `created_at` - Дата создания шаблона
+- `updated_at` - Дата последнего обновления шаблона
+
+Таблица `task_templates` содержит поля расписания с CHECK constraints на уровне БД:
+- для `daily` - `every_n_days` обязателен и >= 1;
+- для `monthly_day` - `day_of_month` обязателен от 1 до 30;
+- для остальных типов - лишние поля должны быть `NULL`, чтобы не было мусорных данных и последующих ошибок из-за них.
+
+**Примечание:** в Swagger пример ответа `TaskTemplate` показывает оба поля `every_n_days` и `day_of_month` заполненными одновременно. На практике только одно из них будет заполнено в зависимости от `schedule_type`, второе будет отсутствовать в ответе.
+
+### Типы расписаний
+
+- `daily` — каждые N дней начиная с `start_date`. Требует `every_n_days >= 1`.
+- `monthly_day` — каждое конкретное число месяца от 1 до 30. Если в месяце нет такого числа (например, 30 февраля), тогда месяц пропускается.
+- `even_days` — только чётные числа месяца.
+- `odd_days` — только нечётные числа месяца.
+
+### Задачи на конкретные даты
+
+Для создания задач на конкретные даты используется эндпоинт `POST /api/v1/tasks/batch`.
+Он принимает список дат и создаёт отдельную задачу на каждую из них.
+
+Этот подход выбран вместо отдельного типа расписания в шаблонах
+потому что задачи на конкретные даты одноразовые и не имеют
+периодичности. Тащить их в механизм шаблонов было бы неверно.
+
+Созданные задачи на конкретные даты - это обычные задачи без `template_id` и `scheduled_for`.
+### Генерация задач
+
+При создании шаблона сразу генерируются задачи на 30 дней вперёд от `start_date`. 30 дней выбрано чтобы было достаточно для планирования и не перегружало БД при создании. При необходимости количество дней можно легко изменить.
+
+При обновлении шаблона все будущие задачи со статусом `new` удаляются, затем генерируются заново по новому расписанию. Было выбрано удалить задачи и создать новые, потому что врач может поменять с четных на нечетные дни, либо выставить другой день месяца, тогда изменение задач не имело бы смысла и все равно пришлось бы создавать новые.  
+
+Задачи в статусе `in_progress` не трогаются, так как уже были взяты в работу. Но при необходимости врач может легко их изменить или удалить через стандартный API.
+
+При удалении шаблона сначала удаляются будущие `new` задачи, затем удаляется сам шаблон. У оставшихся задач (`in_progress`, `done`) поле `template_id` автоматически обнуляется через `ON DELETE SET NULL`. Это сделано чтобы история была сохранена.
+
+Обновление и удаление выполняются в транзакции, поэтому при сбое системы не случится ситуации, когда старые задачи будут удалены, а новые не добавлены. Для этого реализован интерфейс `Transactor` с методом `WithTx`  
+
+### Защита от дублей
+
+В таблице `tasks` есть уникальный индекс по `(template_id, scheduled_for)`. При попытке вставить уже существующую задачу используется `ON CONFLICT DO NOTHING`. Это позволяет безопасно перезапускать генерацию без риска дублей.
+
+### Последующая генерация шаблонных задач
+
+Запускается горутина при старте сервиса и срабатывает раз в 24 часа. При каждом запуске проходит по всем шаблонам и генерирует новые задачи на 30 дней вперед. Таким образом у шаблонов всегда есть задачи на ближайший месяц вперёд.
+
+Горутина останавливается вместе с сервисом через общий контекст.
+
+### Примеры запросов
+
+**Создать задачи на конкретные даты:**
+```json
+POST /api/v1/tasks/batch
+{
+  "title": "Patient call",
+  "description": "Call all patients on the list",
+  "dates": ["2026-04-20", "2026-05-01"]
+}
+```
+
+**Создать шаблон `daily`:**
+```json
+POST /api/v1/task-templates
+{
+  "title": "Daily patient call",
+  "schedule_type": "daily",
+  "every_n_days": 1,
+  "start_date": "2026-04-10"
+}
+```
+
+**Создать шаблон `monthly_day`:**
+```json
+POST /api/v1/task-templates
+{
+  "title": "Monthly report",
+  "schedule_type": "monthly_day",
+  "day_of_month": 15,
+  "start_date": "2026-04-10"
+}
+```
+
+**Создать шаблон `even_days` (для `odd_days` аналагично):**
+```json
+POST /api/v1/task-templates
+{
+  "title": "Inventory check",
+  "schedule_type": "even_days",
+  "start_date": "2026-04-10"
+}
+```
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: docker-compose.yml
+Размер: 957 байт
+────────────────────────────────────────────────────────────────────────────────
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: taskservice
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d taskservice"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations/0001_create_tasks.up.sql:/docker-entrypoint-initdb.d/001_create_tasks.sql:ro
+      - ./migrations/0002_add_task_templates.up.sql:/docker-entrypoint-initdb.d/002_add_task_templates.sql:ro
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      HTTP_ADDR: :8080
+      DATABASE_DSN: postgres://postgres:postgres@postgres:5432/taskservice?sslmode=disable
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: go.mod
+Размер: 441 байт
+────────────────────────────────────────────────────────────────────────────────
+module example.com/taskservice
+
+go 1.23.0
+
+require (
+	github.com/gorilla/mux v1.8.1
+	github.com/jackc/pgx/v5 v5.7.6
+)
+
+require (
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
+	golang.org/x/crypto v0.37.0 // indirect
+	golang.org/x/sync v0.13.0 // indirect
+	golang.org/x/text v0.24.0 // indirect
+)
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: go.sum
+Размер: 2,649 байт
+────────────────────────────────────────────────────────────────────────────────
+github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
+github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/gorilla/mux v1.8.1 h1:TuBL49tXwgrFYWhqrNgrUNEY92u81SPhu7sTdzQEiWY=
+github.com/gorilla/mux v1.8.1/go.mod h1:AKf9I4AEqPTmMytcMc0KkNouC66V3BtZ4qD5fmWSiMQ=
+github.com/jackc/pgpassfile v1.0.0 h1:/6Hmqy13Ss2zCq62VdNG8tM1wchn8zjSGOBJ6icpsIM=
+github.com/jackc/pgpassfile v1.0.0/go.mod h1:CEx0iS5ambNFdcRtxPj5JhEz+xB6uRky5eyVu/W2HEg=
+github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 h1:iCEnooe7UlwOQYpKFhBabPMi4aNAfoODPEFNiAnClxo=
+github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761/go.mod h1:5TJZWKEWniPve33vlWYSoGYefn3gLQRzjfDlhSJ9ZKM=
+github.com/jackc/pgx/v5 v5.7.6 h1:rWQc5FwZSPX58r1OQmkuaNicxdmExaEz5A2DO2hUuTk=
+github.com/jackc/pgx/v5 v5.7.6/go.mod h1:aruU7o91Tc2q2cFp5h4uP3f6ztExVpyVv88Xl/8Vl8M=
+github.com/jackc/puddle/v2 v2.2.2 h1:PR8nw+E/1w0GLuRFSmiioY6UooMp6KJv0/61nB7icHo=
+github.com/jackc/puddle/v2 v2.2.2/go.mod h1:vriiEXHvEE654aYKXXjOvZM39qJ0q+azkZFrfEOc3H4=
+github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
+github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
+github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
+github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UVUgZn+9EI=
+github.com/stretchr/testify v1.7.0/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
+github.com/stretchr/testify v1.8.1 h1:w7B6lhMri9wdJUVmEZPGGhZzrYTPvgJArz7wNPgYKsk=
+github.com/stretchr/testify v1.8.1/go.mod h1:w2LPCIKwWwSfY2zedu0+kehJoqGctiVI29o6fzry7u4=
+golang.org/x/crypto v0.37.0 h1:kJNSjF/Xp7kU0iB2Z+9viTPMW4EqqsrywMXLJOOsXSE=
+golang.org/x/crypto v0.37.0/go.mod h1:vg+k43peMZ0pUMhYmVAWysMK35e6ioLh3wB8ZCAfbVc=
+golang.org/x/sync v0.13.0 h1:AauUjRAJ9OSnvULf/ARrrVywoJDy0YS2AwQ98I37610=
+golang.org/x/sync v0.13.0/go.mod h1:1dzgHSNfp02xaA81J2MS99Qcpr2w7fw1gpm99rleRqA=
+golang.org/x/text v0.24.0 h1:dd5Bzh4yt5KYA8f9CJHCP4FB4D51c2c6JvN37xJJkJ0=
+golang.org/x/text v0.24.0/go.mod h1:L8rBsPeo2pSS+xqN0d5u2ikmjtmoJbDBT1b7nHvFCdU=
+gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
+gopkg.in/yaml.v3 v3.0.0-20200313102051-9f266ea9e77c/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
+gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+
+
+================================================================================
+📁 ПАПКА: daniil3006/cmd/
+================================================================================
+
+================================================================================
+📁 ПАПКА: daniil3006/cmd\api/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: cmd\api\main.go
+Размер: 2,778 байт
+────────────────────────────────────────────────────────────────────────────────
+package main
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	infrastructurepostgres "example.com/taskservice/internal/infrastructure/postgres"
+	postgresrepo "example.com/taskservice/internal/repository/postgres"
+	"example.com/taskservice/internal/scheduler"
+	transporthttp "example.com/taskservice/internal/transport/http"
+	swaggerdocs "example.com/taskservice/internal/transport/http/docs"
+	httphandlers "example.com/taskservice/internal/transport/http/handlers"
+	"example.com/taskservice/internal/usecase/task"
+)
+
+func main() {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
+
+	cfg := loadConfig()
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	pool, err := infrastructurepostgres.Open(ctx, cfg.DatabaseDSN)
+	if err != nil {
+		logger.Error("open postgres", "error", err)
+		os.Exit(1)
+	}
+	defer pool.Close()
+
+	taskRepo := postgresrepo.New(pool)
+	templateRepo := postgresrepo.NewTemplateRepository(pool)
+
+	transactor := postgresrepo.NewTransactor(pool)
+	templateUsecase := task.NewTemplateService(templateRepo, taskRepo, transactor)
+	taskUsecase := task.NewService(taskRepo)
+
+	taskHandler := httphandlers.NewTaskHandler(taskUsecase)
+	templateHandler := httphandlers.NewTemplateHandler(templateUsecase)
+	docsHandler := swaggerdocs.NewHandler()
+
+	router := transporthttp.NewRouter(taskHandler, templateHandler, docsHandler)
+
+	schedule := scheduler.NewScheduler(templateUsecase, 24*time.Hour, logger)
+	go schedule.Run(ctx)
+
+	server := &http.Server{
+		Addr:              cfg.HTTPAddr,
+		Handler:           router,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	go func() {
+		<-ctx.Done()
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			logger.Error("shutdown http server", "error", err)
+		}
+	}()
+
+	logger.Info("http server started", "addr", cfg.HTTPAddr)
+
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		logger.Error("listen and serve", "error", err)
+		os.Exit(1)
+	}
+}
+
+type config struct {
+	HTTPAddr    string
+	DatabaseDSN string
+}
+
+func loadConfig() config {
+	cfg := config{
+		HTTPAddr:    envOrDefault("HTTP_ADDR", ":8080"),
+		DatabaseDSN: envOrDefault("DATABASE_DSN", "postgres://postgres:postgres@localhost:5432/taskservice?sslmode=disable"),
+	}
+
+	if cfg.DatabaseDSN == "" {
+		panic(fmt.Errorf("DATABASE_DSN is required"))
+	}
+
+	return cfg
+}
+
+func envOrDefault(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+
+	return fallback
+}
+
+
+================================================================================
+📁 ПАПКА: daniil3006/internal/
+================================================================================
+
+================================================================================
+📁 ПАПКА: daniil3006/internal\domain/
+================================================================================
+
+================================================================================
+📁 ПАПКА: daniil3006/internal\domain\task/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\domain\task\errors.go
+Размер: 83 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import "errors"
+
+var ErrNotFound = errors.New("task not found")
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\domain\task\task.go
+Размер: 723 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import "time"
+
+type Status string
+
+const (
+	StatusNew        Status = "new"
+	StatusInProgress Status = "in_progress"
+	StatusDone       Status = "done"
+)
+
+type Task struct {
+	ID           int64      `json:"id"`
+	Title        string     `json:"title"`
+	Description  string     `json:"description"`
+	Status       Status     `json:"status"`
+	TemplateID   *int64     `json:"template_id,omitempty"`
+	ScheduledFor *time.Time `json:"scheduled_for,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+}
+
+func (s Status) Valid() bool {
+	switch s {
+	case StatusNew, StatusInProgress, StatusDone:
+		return true
+	default:
+		return false
+	}
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\domain\task\template.go
+Размер: 714 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import "time"
+
+type ScheduleType string
+
+const (
+	ScheduleTypeDaily      ScheduleType = "daily"
+	ScheduleTypeMonthlyDay ScheduleType = "monthly_day"
+	ScheduleTypeEvenDays   ScheduleType = "even_days"
+	ScheduleTypeOddDays    ScheduleType = "odd_days"
+)
+
+type TaskTemplate struct {
+	ID           int64
+	Title        string
+	Description  string
+	ScheduleType ScheduleType
+	EveryNDays   *int
+	DayOfMonth   *int
+	StartDate    time.Time
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
+func (s ScheduleType) Valid() bool {
+	switch s {
+	case ScheduleTypeDaily, ScheduleTypeMonthlyDay, ScheduleTypeEvenDays, ScheduleTypeOddDays:
+		return true
+	default:
+		return false
+	}
+}
+
+
+================================================================================
+📁 ПАПКА: daniil3006/internal\infrastructure/
+================================================================================
+
+================================================================================
+📁 ПАПКА: daniil3006/internal\infrastructure\postgres/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\infrastructure\postgres\pool.go
+Размер: 512 байт
+────────────────────────────────────────────────────────────────────────────────
+package postgres
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+func Open(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
+	if dsn == "" {
+		return nil, fmt.Errorf("database dsn is empty")
+	}
+
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, err
+	}
+
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, err
+	}
+
+	return pool, nil
+}
+
+
+================================================================================
+📁 ПАПКА: daniil3006/internal\repository/
+================================================================================
+
+================================================================================
+📁 ПАПКА: daniil3006/internal\repository\postgres/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\repository\postgres\querier.go
+Размер: 358 байт
+────────────────────────────────────────────────────────────────────────────────
+package postgres
+
+import (
+	"context"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+)
+
+type querier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\repository\postgres\task_repository.go
+Размер: 3,796 байт
+────────────────────────────────────────────────────────────────────────────────
+package postgres
+
+import (
+	"context"
+	"errors"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type Repository struct {
+	q querier
+}
+
+func New(pool *pgxpool.Pool) *Repository {
+	return &Repository{q: pool}
+}
+
+func NewWithTx(tx pgx.Tx) *Repository {
+	return &Repository{q: tx}
+}
+
+func (r *Repository) Create(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error) {
+	const query = `
+		INSERT INTO tasks (title, description, status, template_id, scheduled_for, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (template_id, scheduled_for) WHERE template_id IS NOT NULL DO NOTHING
+		RETURNING id, title, description, status, template_id, scheduled_for, created_at, updated_at
+	`
+
+	row := r.q.QueryRow(ctx, query,
+		task.Title, task.Description, task.Status,
+		task.TemplateID, task.ScheduledFor,
+		task.CreatedAt, task.UpdatedAt,
+	)
+	created, err := scanTask(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return task, nil
+		}
+		return nil, err
+	}
+
+	return created, nil
+}
+
+func (r *Repository) GetByID(ctx context.Context, id int64) (*taskdomain.Task, error) {
+	const query = `
+		SELECT id, title, description, status, template_id, scheduled_for, created_at, updated_at
+		FROM tasks
+		WHERE id = $1
+	`
+
+	row := r.q.QueryRow(ctx, query, id)
+	found, err := scanTask(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, taskdomain.ErrNotFound
+		}
+		return nil, err
+	}
+
+	return found, nil
+}
+
+func (r *Repository) Update(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error) {
+	const query = `
+		UPDATE tasks
+		SET title = $1,
+			description = $2,
+			status = $3,
+			updated_at = $4
+		WHERE id = $5
+		RETURNING id, title, description, status, template_id, scheduled_for, created_at, updated_at
+	`
+
+	row := r.q.QueryRow(ctx, query, task.Title, task.Description, task.Status, task.UpdatedAt, task.ID)
+	updated, err := scanTask(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, taskdomain.ErrNotFound
+		}
+		return nil, err
+	}
+
+	return updated, nil
+}
+
+func (r *Repository) Delete(ctx context.Context, id int64) error {
+	const query = `DELETE FROM tasks WHERE id = $1`
+
+	result, err := r.q.Exec(ctx, query, id)
+	if err != nil {
+		return err
+	}
+
+	if result.RowsAffected() == 0 {
+		return taskdomain.ErrNotFound
+	}
+
+	return nil
+}
+
+func (r *Repository) List(ctx context.Context) ([]taskdomain.Task, error) {
+	const query = `
+		SELECT id, title, description, status, template_id, scheduled_for, created_at, updated_at
+		FROM tasks
+		ORDER BY id DESC
+	`
+
+	rows, err := r.q.Query(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	tasks := make([]taskdomain.Task, 0)
+	for rows.Next() {
+		task, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, *task)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return tasks, nil
+}
+
+func (r *Repository) DeleteFutureNewByTemplateID(ctx context.Context, templateID int64) error {
+	const query = `
+		DELETE FROM tasks
+		WHERE template_id = $1
+		  AND status = 'new'
+		  AND scheduled_for >= CURRENT_DATE
+	`
+
+	_, err := r.q.Exec(ctx, query, templateID)
+	return err
+}
+
+type taskScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanTask(scanner taskScanner) (*taskdomain.Task, error) {
+	var task taskdomain.Task
+
+	if err := scanner.Scan(
+		&task.ID,
+		&task.Title,
+		&task.Description,
+		&task.Status,
+		&task.TemplateID,
+		&task.ScheduledFor,
+		&task.CreatedAt,
+		&task.UpdatedAt,
+	); err != nil {
+		return nil, err
+	}
+
+	return &task, nil
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\repository\postgres\template_repository.go
+Размер: 4,060 байт
+────────────────────────────────────────────────────────────────────────────────
+package postgres
+
+import (
+	"context"
+	"errors"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type TemplateRepository struct {
+	q querier
+}
+
+func NewTemplateRepository(pool *pgxpool.Pool) *TemplateRepository {
+	return &TemplateRepository{q: pool}
+}
+
+func NewTemplateRepositoryWithTx(tx pgx.Tx) *TemplateRepository {
+	return &TemplateRepository{q: tx}
+}
+
+func (r *TemplateRepository) Create(ctx context.Context, template *taskdomain.TaskTemplate) (*taskdomain.TaskTemplate, error) {
+	const query = `
+		INSERT INTO task_templates (title, description, schedule_type, every_n_days, day_of_month, start_date, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		RETURNING id, title, description, schedule_type, every_n_days, day_of_month, start_date, created_at, updated_at
+	`
+
+	row := r.q.QueryRow(ctx, query,
+		template.Title, template.Description, template.ScheduleType,
+		template.EveryNDays, template.DayOfMonth, template.StartDate,
+		template.CreatedAt, template.UpdatedAt,
+	)
+
+	return scanTemplate(row)
+}
+
+func (r *TemplateRepository) GetByID(ctx context.Context, id int64) (*taskdomain.TaskTemplate, error) {
+	const query = `
+		SELECT id, title, description, schedule_type, every_n_days, day_of_month, start_date, created_at, updated_at
+		FROM task_templates
+		WHERE id = $1
+	`
+
+	row := r.q.QueryRow(ctx, query, id)
+	found, err := scanTemplate(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, taskdomain.ErrNotFound
+		}
+		return nil, err
+	}
+
+	return found, nil
+}
+
+func (r *TemplateRepository) Update(ctx context.Context, template *taskdomain.TaskTemplate) (*taskdomain.TaskTemplate, error) {
+	const query = `
+		UPDATE task_templates
+		SET title = $1,
+			description = $2,
+			schedule_type = $3,
+			every_n_days = $4,
+			day_of_month = $5,
+			start_date = $6,
+			updated_at = $7
+		WHERE id = $8
+		RETURNING id, title, description, schedule_type, every_n_days, day_of_month, start_date, created_at, updated_at
+	`
+
+	row := r.q.QueryRow(ctx, query,
+		template.Title, template.Description, template.ScheduleType,
+		template.EveryNDays, template.DayOfMonth, template.StartDate,
+		template.UpdatedAt, template.ID,
+	)
+
+	updated, err := scanTemplate(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, taskdomain.ErrNotFound
+		}
+		return nil, err
+	}
+
+	return updated, nil
+}
+
+func (r *TemplateRepository) Delete(ctx context.Context, id int64) error {
+	const query = `DELETE FROM task_templates WHERE id = $1`
+
+	result, err := r.q.Exec(ctx, query, id)
+	if err != nil {
+		return err
+	}
+
+	if result.RowsAffected() == 0 {
+		return taskdomain.ErrNotFound
+	}
+
+	return nil
+}
+
+func (r *TemplateRepository) List(ctx context.Context) ([]taskdomain.TaskTemplate, error) {
+	const query = `
+		SELECT id, title, description, schedule_type, every_n_days, day_of_month, start_date, created_at, updated_at
+		FROM task_templates
+		ORDER BY id DESC
+	`
+
+	return r.queryTemplates(ctx, query)
+}
+
+func (r *TemplateRepository) queryTemplates(ctx context.Context, query string, args ...any) ([]taskdomain.TaskTemplate, error) {
+	rows, err := r.q.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	templates := make([]taskdomain.TaskTemplate, 0)
+	for rows.Next() {
+		t, err := scanTemplate(rows)
+		if err != nil {
+			return nil, err
+		}
+		templates = append(templates, *t)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return templates, nil
+}
+
+type templateScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanTemplate(scanner templateScanner) (*taskdomain.TaskTemplate, error) {
+	var t taskdomain.TaskTemplate
+
+	if err := scanner.Scan(
+		&t.ID,
+		&t.Title,
+		&t.Description,
+		&t.ScheduleType,
+		&t.EveryNDays,
+		&t.DayOfMonth,
+		&t.StartDate,
+		&t.CreatedAt,
+		&t.UpdatedAt,
+	); err != nil {
+		return nil, err
+	}
+
+	return &t, nil
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\repository\postgres\transactor.go
+Размер: 707 байт
+────────────────────────────────────────────────────────────────────────────────
+package postgres
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	taskusecase "example.com/taskservice/internal/usecase/task"
+)
+
+type Transactor struct {
+	pool *pgxpool.Pool
+}
+
+func NewTransactor(pool *pgxpool.Pool) *Transactor {
+	return &Transactor{pool: pool}
+}
+
+func (t *Transactor) WithTx(ctx context.Context, fn func(taskRepo taskusecase.Repository, templateRepo taskusecase.TemplateRepository) error) error {
+	tx, err := t.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if err := fn(NewWithTx(tx), NewTemplateRepositoryWithTx(tx)); err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
+}
+
+
+================================================================================
+📁 ПАПКА: daniil3006/internal\scheduler/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\scheduler\scheduler.go
+Размер: 949 байт
+────────────────────────────────────────────────────────────────────────────────
+package scheduler
+
+import (
+	"context"
+	"log/slog"
+	"time"
+
+	"example.com/taskservice/internal/usecase/task"
+)
+
+type Scheduler struct {
+	templateUsecase task.TemplateUsecase
+	interval        time.Duration
+	logger          *slog.Logger
+}
+
+func NewScheduler(templateUsecase task.TemplateUsecase, interval time.Duration, logger *slog.Logger) *Scheduler {
+	return &Scheduler{
+		templateUsecase: templateUsecase,
+		interval:        interval,
+		logger:          logger,
+	}
+}
+
+func (s Scheduler) Run(ctx context.Context) {
+	err := s.templateUsecase.RefreshTasks(ctx)
+	if err != nil {
+		slog.Error("failed to refresh tasks")
+	}
+
+	ticker := time.NewTicker(s.interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			err = s.templateUsecase.RefreshTasks(ctx)
+			if err != nil {
+				slog.Error("failed to refresh tasks")
+			}
+		case <-ctx.Done():
+			slog.Info("scheduler stopped")
+			return
+		}
+	}
+}
+
+
+================================================================================
+📁 ПАПКА: daniil3006/internal\transport/
+================================================================================
+
+================================================================================
+📁 ПАПКА: daniil3006/internal\transport\http/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\router.go
+Размер: 1,707 байт
+────────────────────────────────────────────────────────────────────────────────
+package transporthttp
+
+import (
+	"net/http"
+
+	"github.com/gorilla/mux"
+
+	swaggerdocs "example.com/taskservice/internal/transport/http/docs"
+	httphandlers "example.com/taskservice/internal/transport/http/handlers"
+)
+
+func NewRouter(
+	taskHandler *httphandlers.TaskHandler,
+	templateHandler *httphandlers.TemplateHandler,
+	docsHandler *swaggerdocs.Handler,
+) *mux.Router {
+	router := mux.NewRouter().StrictSlash(true)
+
+	router.HandleFunc("/swagger/openapi.json", docsHandler.ServeSpec).Methods(http.MethodGet)
+	router.HandleFunc("/swagger/", docsHandler.ServeUI).Methods(http.MethodGet)
+	router.HandleFunc("/swagger", docsHandler.RedirectToUI).Methods(http.MethodGet)
+
+	api := router.PathPrefix("/api/v1").Subrouter()
+
+	api.HandleFunc("/tasks/batch", taskHandler.BatchCreateByDates).Methods(http.MethodPost)
+	api.HandleFunc("/tasks", taskHandler.Create).Methods(http.MethodPost)
+	api.HandleFunc("/tasks", taskHandler.List).Methods(http.MethodGet)
+	api.HandleFunc("/tasks/{id:[0-9]+}", taskHandler.GetByID).Methods(http.MethodGet)
+	api.HandleFunc("/tasks/{id:[0-9]+}", taskHandler.Update).Methods(http.MethodPut)
+	api.HandleFunc("/tasks/{id:[0-9]+}", taskHandler.Delete).Methods(http.MethodDelete)
+
+	api.HandleFunc("/task-templates", templateHandler.Create).Methods(http.MethodPost)
+	api.HandleFunc("/task-templates", templateHandler.List).Methods(http.MethodGet)
+	api.HandleFunc("/task-templates/{id:[0-9]+}", templateHandler.GetByID).Methods(http.MethodGet)
+	api.HandleFunc("/task-templates/{id:[0-9]+}", templateHandler.Update).Methods(http.MethodPut)
+	api.HandleFunc("/task-templates/{id:[0-9]+}", templateHandler.Delete).Methods(http.MethodDelete)
+
+	return router
+}
+
+
+================================================================================
+📁 ПАПКА: daniil3006/internal\transport\http\docs/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\docs\handler.go
+Размер: 1,779 байт
+────────────────────────────────────────────────────────────────────────────────
+package docs
+
+import (
+	"embed"
+	"net/http"
+)
+
+//go:embed openapi.json
+var openAPISpec embed.FS
+
+type Handler struct {
+	spec []byte
+}
+
+func NewHandler() *Handler {
+	spec, err := openAPISpec.ReadFile("openapi.json")
+	if err != nil {
+		panic(err)
+	}
+
+	return &Handler{spec: spec}
+}
+
+func (h *Handler) ServeSpec(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+
+	_, _ = w.Write(h.spec)
+}
+
+func (h *Handler) ServeUI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+
+	_, _ = w.Write([]byte(swaggerUIHTML))
+}
+
+func (h *Handler) RedirectToUI(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "/swagger/", http.StatusMovedPermanently)
+}
+
+var swaggerUIHTML = []byte(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Task Service Swagger</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+  <style>
+    body { margin: 0; background: #f6f7fb; }
+    #swagger-ui { max-width: 1440px; margin: 0 auto; }
+  </style>
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js" crossorigin></script>
+  <script>
+    window.onload = function() {
+      window.ui = SwaggerUIBundle({
+        url: '/swagger/openapi.json',
+        dom_id: '#swagger-ui',
+        deepLinking: true,
+        presets: [SwaggerUIBundle.presets.apis],
+        layout: 'BaseLayout'
+      });
+    };
+  </script>
+</body>
+</html>`)
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\docs\openapi.json
+Размер: 20,357 байт
+────────────────────────────────────────────────────────────────────────────────
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Task Service API",
+    "version": "1.0.0",
+    "description": "CRUD API for tasks built with clean architecture."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8080"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Tasks",
+      "description": "Operations with tasks"
+    },
+    {
+      "name": "Task Templates",
+      "description": "Operations with recurring task templates"
+    }
+  ],
+  "paths": {
+    "/api/v1/tasks": {
+      "get": {
+        "tags": [
+          "Tasks"
+        ],
+        "summary": "List tasks",
+        "description": "Returns all tasks including those generated from templates.",
+        "responses": {
+          "200": {
+            "description": "Task list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Task"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Tasks"
+        ],
+        "summary": "Create task",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTaskRequest"
+              },
+              "example": {
+                "title": "Prepare release",
+                "description": "Collect release notes and check migrations",
+                "status": "new"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created task",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/batch": {
+      "post": {
+        "tags": [
+          "Tasks"
+        ],
+        "summary": "Create tasks for specific dates",
+        "description": "Creates a separate task for each date in the list. Tasks are created as regular tasks without template_id and scheduled_for.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchCreateTaskRequest"
+              },
+              "example": {
+                "title": "Patient call",
+                "description": "Call all patients on the list",
+                "dates": [
+                  "2026-04-20",
+                  "2026-05-01"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created tasks",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Task"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{id}": {
+      "get": {
+        "tags": [
+          "Tasks"
+        ],
+        "summary": "Get task by ID",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Task",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Tasks"
+        ],
+        "summary": "Update task",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateTaskRequest"
+              },
+              "example": {
+                "title": "Prepare release",
+                "description": "Collect release notes and check migrations",
+                "status": "in_progress"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated task",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Tasks"
+        ],
+        "summary": "Delete task",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/v1/task-templates": {
+      "get": {
+        "tags": [
+          "Task Templates"
+        ],
+        "summary": "List task templates",
+        "responses": {
+          "200": {
+            "description": "Template list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TaskTemplate"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Task Templates"
+        ],
+        "summary": "Create task template",
+        "description": "Creates a recurring task template and immediately generates tasks for the next 30 days.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTaskTemplateRequest"
+              },
+              "examples": {
+                "daily": {
+                  "summary": "Every N days",
+                  "value": {
+                    "title": "Daily patient call",
+                    "description": "Call all patients",
+                    "schedule_type": "daily",
+                    "every_n_days": 1,
+                    "start_date": "2026-04-10"
+                  }
+                },
+                "monthly_day": {
+                  "summary": "Every month on a specific day",
+                  "value": {
+                    "title": "Monthly report",
+                    "description": "Form the monthly report",
+                    "schedule_type": "monthly_day",
+                    "day_of_month": 15,
+                    "start_date": "2026-04-10"
+                  }
+                },
+                "even_days": {
+                  "summary": "Even days of the month",
+                  "value": {
+                    "title": "Inventory check",
+                    "schedule_type": "even_days",
+                    "start_date": "2026-04-10"
+                  }
+                },
+                "odd_days": {
+                  "summary": "Odd days of the month",
+                  "value": {
+                    "title": "Ward rounds",
+                    "schedule_type": "odd_days",
+                    "start_date": "2026-04-10"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created template",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskTemplate"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/v1/task-templates/{id}": {
+      "get": {
+        "tags": [
+          "Task Templates"
+        ],
+        "summary": "Get task template by ID",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Task template",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskTemplate"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Task Templates"
+        ],
+        "summary": "Update task template",
+        "description": "Updates the template and regenerates all future new tasks according to the new schedule. Tasks in progress are not affected.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTaskTemplateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated template",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskTemplate"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Task Templates"
+        ],
+        "summary": "Delete task template",
+        "description": "Deletes the template and all future new tasks generated by it. Tasks in progress or done are not affected.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "responses": {
+      "BadRequest": {
+        "description": "Bad request",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Resource not found",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "InternalError": {
+        "description": "Internal server error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "CreateTaskRequest": {
+        "type": "object",
+        "required": [
+          "title"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "example": "Prepare release"
+          },
+          "description": {
+            "type": "string",
+            "example": "Collect release notes and check migrations"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "new",
+              "in_progress",
+              "done"
+            ],
+            "example": "new"
+          }
+        }
+      },
+      "UpdateTaskRequest": {
+        "type": "object",
+        "required": [
+          "title",
+          "status"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "example": "Prepare release"
+          },
+          "description": {
+            "type": "string",
+            "example": "Collect release notes and check migrations"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "new",
+              "in_progress",
+              "done"
+            ],
+            "example": "in_progress"
+          }
+        }
+      },
+      "BatchCreateTaskRequest": {
+        "type": "object",
+        "required": [
+          "title",
+          "dates"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "example": "Patient call"
+          },
+          "description": {
+            "type": "string",
+            "example": "Call all patients on the list"
+          },
+          "dates": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "date"
+            },
+            "example": [
+              "2026-04-20",
+              "2026-05-01"
+            ]
+          }
+        }
+      },
+      "Task": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "example": 1
+          },
+          "title": {
+            "type": "string",
+            "example": "Prepare release"
+          },
+          "description": {
+            "type": "string",
+            "example": "Collect release notes and check migrations"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "new",
+              "in_progress",
+              "done"
+            ],
+            "example": "new"
+          },
+          "template_id": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "description": "Present only for tasks generated from a template"
+          },
+          "scheduled_for": {
+            "type": "string",
+            "format": "date",
+            "nullable": true,
+            "description": "Present only for tasks generated from a template"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-03-24T00:00:00Z"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-03-24T00:00:00Z"
+          }
+        }
+      },
+      "CreateTaskTemplateRequest": {
+        "type": "object",
+        "required": [
+          "title",
+          "schedule_type",
+          "start_date"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "example": "Daily patient call"
+          },
+          "description": {
+            "type": "string",
+            "example": "Call all patients on the list"
+          },
+          "schedule_type": {
+            "type": "string",
+            "enum": [
+              "daily",
+              "monthly_day",
+              "even_days",
+              "odd_days"
+            ]
+          },
+          "every_n_days": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Required when schedule_type=daily"
+          },
+          "day_of_month": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 30,
+            "description": "Required when schedule_type=monthly_day"
+          },
+          "start_date": {
+            "type": "string",
+            "format": "date",
+            "example": "2026-04-10"
+          }
+        }
+      },
+      "TaskTemplate": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "example": 1
+          },
+          "title": {
+            "type": "string",
+            "example": "Daily patient call"
+          },
+          "description": {
+            "type": "string",
+            "example": "Call all patients on the list"
+          },
+          "schedule_type": {
+            "type": "string",
+            "enum": [
+              "daily",
+              "monthly_day",
+              "even_days",
+              "odd_days"
+            ],
+            "example": "daily"
+          },
+          "every_n_days": {
+            "type": "integer",
+            "nullable": true,
+            "example": 1,
+            "description": "Only present when schedule_type=daily. null for other types"
+          },
+          "day_of_month": {
+            "type": "integer",
+            "nullable": true,
+            "example": 15,
+            "description": "Only present when schedule_type=monthly_day. null for other types"
+          },
+          "start_date": {
+            "type": "string",
+            "format": "date",
+            "example": "2026-04-10"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-04-10T00:00:00Z"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-04-10T00:00:00Z"
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string",
+            "example": "task not found"
+          }
+        }
+      }
+    }
+  }
+}
+
+================================================================================
+📁 ПАПКА: daniil3006/internal\transport\http\handlers/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\handlers\dto.go
+Размер: 3,048 байт
+────────────────────────────────────────────────────────────────────────────────
+package handlers
+
+import (
+	"time"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type taskMutationDTO struct {
+	Title       string            `json:"title"`
+	Description string            `json:"description"`
+	Status      taskdomain.Status `json:"status"`
+}
+
+type taskDTO struct {
+	ID           int64             `json:"id"`
+	Title        string            `json:"title"`
+	Description  string            `json:"description"`
+	Status       taskdomain.Status `json:"status"`
+	TemplateID   *int64            `json:"template_id,omitempty"`
+	ScheduledFor *time.Time        `json:"scheduled_for,omitempty"`
+	CreatedAt    time.Time         `json:"created_at"`
+	UpdatedAt    time.Time         `json:"updated_at"`
+}
+
+func newTaskDTO(task *taskdomain.Task) taskDTO {
+	return taskDTO{
+		ID:           task.ID,
+		Title:        task.Title,
+		Description:  task.Description,
+		Status:       task.Status,
+		TemplateID:   task.TemplateID,
+		ScheduledFor: task.ScheduledFor,
+		CreatedAt:    task.CreatedAt,
+		UpdatedAt:    task.UpdatedAt,
+	}
+}
+
+type createTemplateMutationDTO struct {
+	Title        string                  `json:"title"`
+	Description  string                  `json:"description"`
+	ScheduleType taskdomain.ScheduleType `json:"schedule_type"`
+	EveryNDays   *int                    `json:"every_n_days,omitempty"`
+	DayOfMonth   *int                    `json:"day_of_month,omitempty"`
+	StartDate    string                  `json:"start_date"`
+}
+
+type batchCreateByDatesDTO struct {
+	Title       string   `json:"title"`
+	Description string   `json:"description"`
+	Dates       []string `json:"dates"`
+}
+
+type updateTemplateMutationDTO struct {
+	Title        string                  `json:"title"`
+	Description  string                  `json:"description"`
+	ScheduleType taskdomain.ScheduleType `json:"schedule_type"`
+	EveryNDays   *int                    `json:"every_n_days,omitempty"`
+	DayOfMonth   *int                    `json:"day_of_month,omitempty"`
+	StartDate    string                  `json:"start_date"`
+}
+
+type templateDTO struct {
+	ID           int64                   `json:"id"`
+	Title        string                  `json:"title"`
+	Description  string                  `json:"description"`
+	ScheduleType taskdomain.ScheduleType `json:"schedule_type"`
+	EveryNDays   *int                    `json:"every_n_days,omitempty"`
+	DayOfMonth   *int                    `json:"day_of_month,omitempty"`
+	StartDate    string                  `json:"start_date"`
+	CreatedAt    time.Time               `json:"created_at"`
+	UpdatedAt    time.Time               `json:"updated_at"`
+}
+
+func newTemplateDTO(t *taskdomain.TaskTemplate) templateDTO {
+	return templateDTO{
+		ID:           t.ID,
+		Title:        t.Title,
+		Description:  t.Description,
+		ScheduleType: t.ScheduleType,
+		EveryNDays:   t.EveryNDays,
+		DayOfMonth:   t.DayOfMonth,
+		StartDate:    t.StartDate.Format("2006-01-02"),
+		CreatedAt:    t.CreatedAt,
+		UpdatedAt:    t.UpdatedAt,
+	}
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\handlers\task_handler.go
+Размер: 4,837 байт
+────────────────────────────────────────────────────────────────────────────────
+package handlers
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strconv"
+	"time"
+
+	"github.com/gorilla/mux"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+	taskusecase "example.com/taskservice/internal/usecase/task"
+)
+
+type TaskHandler struct {
+	usecase taskusecase.Usecase
+}
+
+func NewTaskHandler(usecase taskusecase.Usecase) *TaskHandler {
+	return &TaskHandler{usecase: usecase}
+}
+
+func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
+	var req taskMutationDTO
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	created, err := h.usecase.Create(r.Context(), taskusecase.CreateInput{
+		Title:       req.Title,
+		Description: req.Description,
+		Status:      req.Status,
+	})
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, newTaskDTO(created))
+}
+
+func (h *TaskHandler) GetByID(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	task, err := h.usecase.GetByID(r.Context(), id)
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, newTaskDTO(task))
+}
+
+func (h *TaskHandler) Update(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	var req taskMutationDTO
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	updated, err := h.usecase.Update(r.Context(), id, taskusecase.UpdateInput{
+		Title:       req.Title,
+		Description: req.Description,
+		Status:      req.Status,
+	})
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, newTaskDTO(updated))
+}
+
+func (h *TaskHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	if err := h.usecase.Delete(r.Context(), id); err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
+	tasks, err := h.usecase.List(r.Context())
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	response := make([]taskDTO, 0, len(tasks))
+	for i := range tasks {
+		response = append(response, newTaskDTO(&tasks[i]))
+	}
+
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (h *TaskHandler) BatchCreateByDates(w http.ResponseWriter, r *http.Request) {
+	var req batchCreateByDatesDTO
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	if len(req.Dates) == 0 {
+		writeError(w, http.StatusBadRequest, errors.New("dates must not be empty"))
+		return
+	}
+
+	dates := make([]time.Time, 0, len(req.Dates))
+	for _, d := range req.Dates {
+		parsed, err := time.Parse("2006-01-02", d)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, errors.New("invalid date format"))
+			return
+		}
+		dates = append(dates, parsed)
+	}
+
+	created, err := h.usecase.BatchCreateByDates(r.Context(), taskusecase.BatchCreateByDatesInput{
+		Title:       req.Title,
+		Description: req.Description,
+		Dates:       dates,
+	})
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	response := make([]taskDTO, 0, len(created))
+	for i := range created {
+		response = append(response, newTaskDTO(&created[i]))
+	}
+
+	writeJSON(w, http.StatusCreated, response)
+}
+
+func getIDFromRequest(r *http.Request) (int64, error) {
+	rawID := mux.Vars(r)["id"]
+	if rawID == "" {
+		return 0, errors.New("missing task id")
+	}
+
+	id, err := strconv.ParseInt(rawID, 10, 64)
+	if err != nil {
+		return 0, errors.New("invalid task id")
+	}
+
+	if id <= 0 {
+		return 0, errors.New("invalid task id")
+	}
+
+	return id, nil
+}
+
+func decodeJSON(r *http.Request, dst any) error {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+
+	if err := decoder.Decode(dst); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func writeUsecaseError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, taskdomain.ErrNotFound):
+		writeError(w, http.StatusNotFound, err)
+	case errors.Is(err, taskusecase.ErrInvalidInput):
+		writeError(w, http.StatusBadRequest, err)
+	default:
+		writeError(w, http.StatusInternalServerError, err)
+	}
+}
+
+func writeError(w http.ResponseWriter, status int, err error) {
+	writeJSON(w, status, map[string]string{
+		"error": err.Error(),
+	})
+}
+
+func writeJSON(w http.ResponseWriter, status int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\handlers\template_handler.go
+Размер: 3,185 байт
+────────────────────────────────────────────────────────────────────────────────
+package handlers
+
+import (
+	"errors"
+	"net/http"
+	"time"
+
+	taskusecase "example.com/taskservice/internal/usecase/task"
+)
+
+type TemplateHandler struct {
+	usecase taskusecase.TemplateUsecase
+}
+
+func NewTemplateHandler(usecase taskusecase.TemplateUsecase) *TemplateHandler {
+	return &TemplateHandler{usecase: usecase}
+}
+
+func (h *TemplateHandler) Create(w http.ResponseWriter, r *http.Request) {
+	var req createTemplateMutationDTO
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	startDate, err := parseDate(req.StartDate)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, errors.New("invalid start_date format"))
+		return
+	}
+
+	created, err := h.usecase.Create(r.Context(), taskusecase.CreateTemplateInput{
+		Title:        req.Title,
+		Description:  req.Description,
+		ScheduleType: req.ScheduleType,
+		EveryNDays:   req.EveryNDays,
+		DayOfMonth:   req.DayOfMonth,
+		StartDate:    startDate,
+	})
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, newTemplateDTO(created))
+}
+
+func (h *TemplateHandler) GetByID(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	template, err := h.usecase.GetByID(r.Context(), id)
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, newTemplateDTO(template))
+}
+
+func (h *TemplateHandler) Update(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	var req updateTemplateMutationDTO
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	startDate, err := parseDate(req.StartDate)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, errors.New("invalid start_date format"))
+		return
+	}
+
+	updated, err := h.usecase.Update(r.Context(), id, taskusecase.UpdateTemplateInput{
+		Title:        req.Title,
+		Description:  req.Description,
+		ScheduleType: req.ScheduleType,
+		EveryNDays:   req.EveryNDays,
+		DayOfMonth:   req.DayOfMonth,
+		StartDate:    startDate,
+	})
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, newTemplateDTO(updated))
+}
+
+func (h *TemplateHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	if err := h.usecase.Delete(r.Context(), id); err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *TemplateHandler) List(w http.ResponseWriter, r *http.Request) {
+	templates, err := h.usecase.List(r.Context())
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	response := make([]templateDTO, 0, len(templates))
+	for i := range templates {
+		response = append(response, newTemplateDTO(&templates[i]))
+	}
+
+	writeJSON(w, http.StatusOK, response)
+}
+
+func parseDate(s string) (time.Time, error) {
+	return time.Parse("2006-01-02", s)
+}
+
+
+================================================================================
+📁 ПАПКА: daniil3006/internal\usecase/
+================================================================================
+
+================================================================================
+📁 ПАПКА: daniil3006/internal\usecase\task/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\task\errors.go
+Размер: 91 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import "errors"
+
+var ErrInvalidInput = errors.New("invalid task input")
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\task\generator.go
+Размер: 2,091 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import (
+	"time"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+const generationHorizonDays = 30
+
+func GenerateDates(template *taskdomain.TaskTemplate, from time.Time) []time.Time {
+	switch template.ScheduleType {
+	case taskdomain.ScheduleTypeDaily:
+		return generateDaily(template.StartDate, *template.EveryNDays, from)
+	case taskdomain.ScheduleTypeMonthlyDay:
+		return generateMonthlyDay(*template.DayOfMonth, from)
+	case taskdomain.ScheduleTypeEvenDays:
+		return generateEvenOdd(from, true)
+	case taskdomain.ScheduleTypeOddDays:
+		return generateEvenOdd(from, false)
+	default:
+		return nil
+	}
+}
+
+func generateDaily(startDate time.Time, everyNDays int, from time.Time) []time.Time {
+	until := from.AddDate(0, 0, generationHorizonDays)
+
+	first := startDate
+	for first.Before(from) {
+		first = first.AddDate(0, 0, everyNDays)
+	}
+
+	var dates []time.Time
+	for day := first; !day.After(until); day = day.AddDate(0, 0, everyNDays) {
+		dates = append(dates, day)
+	}
+
+	return dates
+}
+
+func generateMonthlyDay(dayOfMonth int, from time.Time) []time.Time {
+	until := from.AddDate(0, 0, generationHorizonDays)
+
+	var dates []time.Time
+
+	current := time.Date(from.Year(), from.Month(), 1, 0, 0, 0, 0, time.UTC)
+	for current.Before(until) {
+		lastDay := lastDateOfMonth(current.Year(), current.Month())
+		if dayOfMonth <= lastDay {
+			day := time.Date(current.Year(), current.Month(), dayOfMonth, 0, 0, 0, 0, time.UTC)
+			if !day.Before(from) && !day.After(until) {
+				dates = append(dates, day)
+			}
+		}
+		current = current.AddDate(0, 1, 0)
+	}
+
+	return dates
+}
+
+func generateEvenOdd(from time.Time, even bool) []time.Time {
+	until := from.AddDate(0, 0, generationHorizonDays)
+
+	var dates []time.Time
+	for day := from; !day.After(until); day = day.AddDate(0, 0, 1) {
+		isEven := day.Day()%2 == 0
+		if isEven == even {
+			dates = append(dates, day)
+		}
+	}
+
+	return dates
+}
+
+func lastDateOfMonth(year int, month time.Month) int {
+	return time.Date(year, month+1, 0, 0, 0, 0, 0, time.UTC).Day()
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\task\ports.go
+Размер: 2,726 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import (
+	"context"
+	"time"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type Transactor interface {
+	WithTx(ctx context.Context, fn func(taskRepo Repository, templateRepo TemplateRepository) error) error
+}
+
+type Repository interface {
+	Create(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error)
+	GetByID(ctx context.Context, id int64) (*taskdomain.Task, error)
+	Update(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error)
+	Delete(ctx context.Context, id int64) error
+	List(ctx context.Context) ([]taskdomain.Task, error)
+	DeleteFutureNewByTemplateID(ctx context.Context, templateID int64) error
+}
+
+type TemplateRepository interface {
+	Create(ctx context.Context, template *taskdomain.TaskTemplate) (*taskdomain.TaskTemplate, error)
+	GetByID(ctx context.Context, id int64) (*taskdomain.TaskTemplate, error)
+	Update(ctx context.Context, template *taskdomain.TaskTemplate) (*taskdomain.TaskTemplate, error)
+	Delete(ctx context.Context, id int64) error
+	List(ctx context.Context) ([]taskdomain.TaskTemplate, error)
+}
+
+type Usecase interface {
+	Create(ctx context.Context, input CreateInput) (*taskdomain.Task, error)
+	GetByID(ctx context.Context, id int64) (*taskdomain.Task, error)
+	Update(ctx context.Context, id int64, input UpdateInput) (*taskdomain.Task, error)
+	Delete(ctx context.Context, id int64) error
+	List(ctx context.Context) ([]taskdomain.Task, error)
+	BatchCreateByDates(ctx context.Context, input BatchCreateByDatesInput) ([]taskdomain.Task, error)
+}
+
+type TemplateUsecase interface {
+	Create(ctx context.Context, input CreateTemplateInput) (*taskdomain.TaskTemplate, error)
+	GetByID(ctx context.Context, id int64) (*taskdomain.TaskTemplate, error)
+	Update(ctx context.Context, id int64, input UpdateTemplateInput) (*taskdomain.TaskTemplate, error)
+	Delete(ctx context.Context, id int64) error
+	List(ctx context.Context) ([]taskdomain.TaskTemplate, error)
+	RefreshTasks(ctx context.Context) error
+}
+
+type CreateInput struct {
+	Title       string
+	Description string
+	Status      taskdomain.Status
+}
+
+type UpdateInput struct {
+	Title       string
+	Description string
+	Status      taskdomain.Status
+}
+
+type BatchCreateByDatesInput struct {
+	Title       string
+	Description string
+	Dates       []time.Time
+}
+
+type CreateTemplateInput struct {
+	Title        string
+	Description  string
+	ScheduleType taskdomain.ScheduleType
+	EveryNDays   *int
+	DayOfMonth   *int
+	StartDate    time.Time
+}
+
+type UpdateTemplateInput struct {
+	Title        string
+	Description  string
+	ScheduleType taskdomain.ScheduleType
+	EveryNDays   *int
+	DayOfMonth   *int
+	StartDate    time.Time
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\task\service.go
+Размер: 3,768 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type Service struct {
+	repo Repository
+	now  func() time.Time
+}
+
+func NewService(repo Repository) *Service {
+	return &Service{
+		repo: repo,
+		now:  func() time.Time { return time.Now().UTC() },
+	}
+}
+
+func (s *Service) Create(ctx context.Context, input CreateInput) (*taskdomain.Task, error) {
+	normalized, err := validateCreateInput(input)
+	if err != nil {
+		return nil, err
+	}
+
+	model := &taskdomain.Task{
+		Title:       normalized.Title,
+		Description: normalized.Description,
+		Status:      normalized.Status,
+	}
+	now := s.now()
+	model.CreatedAt = now
+	model.UpdatedAt = now
+
+	created, err := s.repo.Create(ctx, model)
+	if err != nil {
+		return nil, err
+	}
+
+	return created, nil
+}
+
+func (s *Service) GetByID(ctx context.Context, id int64) (*taskdomain.Task, error) {
+	if id <= 0 {
+		return nil, fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+	}
+
+	return s.repo.GetByID(ctx, id)
+}
+
+func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (*taskdomain.Task, error) {
+	if id <= 0 {
+		return nil, fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+	}
+
+	normalized, err := validateUpdateInput(input)
+	if err != nil {
+		return nil, err
+	}
+
+	model := &taskdomain.Task{
+		ID:          id,
+		Title:       normalized.Title,
+		Description: normalized.Description,
+		Status:      normalized.Status,
+		UpdatedAt:   s.now(),
+	}
+
+	updated, err := s.repo.Update(ctx, model)
+	if err != nil {
+		return nil, err
+	}
+
+	return updated, nil
+}
+
+func (s *Service) Delete(ctx context.Context, id int64) error {
+	if id <= 0 {
+		return fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+	}
+
+	return s.repo.Delete(ctx, id)
+}
+
+func (s *Service) List(ctx context.Context) ([]taskdomain.Task, error) {
+	return s.repo.List(ctx)
+}
+
+func validateCreateInput(input CreateInput) (CreateInput, error) {
+	input.Title = strings.TrimSpace(input.Title)
+	input.Description = strings.TrimSpace(input.Description)
+
+	if input.Title == "" {
+		return CreateInput{}, fmt.Errorf("%w: title is required", ErrInvalidInput)
+	}
+
+	if input.Status == "" {
+		input.Status = taskdomain.StatusNew
+	}
+
+	if !input.Status.Valid() {
+		return CreateInput{}, fmt.Errorf("%w: invalid status", ErrInvalidInput)
+	}
+
+	return input, nil
+}
+
+func validateUpdateInput(input UpdateInput) (UpdateInput, error) {
+	input.Title = strings.TrimSpace(input.Title)
+	input.Description = strings.TrimSpace(input.Description)
+
+	if input.Title == "" {
+		return UpdateInput{}, fmt.Errorf("%w: title is required", ErrInvalidInput)
+	}
+
+	if !input.Status.Valid() {
+		return UpdateInput{}, fmt.Errorf("%w: invalid status", ErrInvalidInput)
+	}
+
+	return input, nil
+}
+
+func (s *Service) BatchCreateByDates(ctx context.Context, input BatchCreateByDatesInput) ([]taskdomain.Task, error) {
+	input.Title = strings.TrimSpace(input.Title)
+	input.Description = strings.TrimSpace(input.Description)
+
+	if input.Title == "" {
+		return nil, fmt.Errorf("%w: title is required", ErrInvalidInput)
+	}
+
+	if len(input.Dates) == 0 {
+		return nil, fmt.Errorf("%w: dates must not be empty", ErrInvalidInput)
+	}
+
+	result := make([]taskdomain.Task, 0, len(input.Dates))
+
+	for _, d := range input.Dates {
+		task := &taskdomain.Task{
+			Title:        input.Title,
+			Description:  input.Description,
+			Status:       taskdomain.StatusNew,
+			ScheduledFor: &d,
+			CreatedAt:    s.now(),
+			UpdatedAt:    s.now(),
+		}
+
+		created, err := s.repo.Create(ctx, task)
+		if err != nil {
+			return nil, err
+		}
+
+		result = append(result, *created)
+	}
+
+	return result, nil
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\task\template_service.go
+Размер: 5,677 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type TemplateService struct {
+	templateRepo TemplateRepository
+	taskRepo     Repository
+	transactor   Transactor
+	now          func() time.Time
+}
+
+func NewTemplateService(templateRepo TemplateRepository, taskRepo Repository, transactor Transactor) *TemplateService {
+	return &TemplateService{
+		templateRepo: templateRepo,
+		taskRepo:     taskRepo,
+		transactor:   transactor,
+		now:          func() time.Time { return time.Now().UTC() },
+	}
+}
+
+func (s *TemplateService) Create(ctx context.Context, input CreateTemplateInput) (*taskdomain.TaskTemplate, error) {
+	if err := validateCreateTemplateInput(input); err != nil {
+		return nil, err
+	}
+
+	now := s.now()
+	template := &taskdomain.TaskTemplate{
+		Title:        input.Title,
+		Description:  input.Description,
+		ScheduleType: input.ScheduleType,
+		EveryNDays:   input.EveryNDays,
+		DayOfMonth:   input.DayOfMonth,
+		StartDate:    input.StartDate,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+
+	created, err := s.templateRepo.Create(ctx, template)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.generateAndSaveTasks(ctx, s.taskRepo, created, s.today()); err != nil {
+		return nil, err
+	}
+
+	return created, nil
+}
+
+func (s *TemplateService) GetByID(ctx context.Context, id int64) (*taskdomain.TaskTemplate, error) {
+	if id <= 0 {
+		return nil, fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+	}
+
+	return s.templateRepo.GetByID(ctx, id)
+}
+
+func (s *TemplateService) Update(ctx context.Context, id int64, input UpdateTemplateInput) (*taskdomain.TaskTemplate, error) {
+	if id <= 0 {
+		return nil, fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+	}
+
+	if err := validateUpdateTemplateInput(input); err != nil {
+		return nil, err
+	}
+
+	var updated *taskdomain.TaskTemplate
+
+	err := s.transactor.WithTx(ctx, func(taskRepo Repository, templateRepo TemplateRepository) error {
+		template := &taskdomain.TaskTemplate{
+			ID:           id,
+			Title:        input.Title,
+			Description:  input.Description,
+			ScheduleType: input.ScheduleType,
+			EveryNDays:   input.EveryNDays,
+			DayOfMonth:   input.DayOfMonth,
+			StartDate:    input.StartDate,
+			UpdatedAt:    s.now(),
+		}
+
+		var err error
+		updated, err = templateRepo.Update(ctx, template)
+		if err != nil {
+			return err
+		}
+
+		if err := taskRepo.DeleteFutureNewByTemplateID(ctx, id); err != nil {
+			return err
+		}
+
+		return s.generateAndSaveTasks(ctx, taskRepo, updated, s.today())
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return updated, nil
+}
+
+func (s *TemplateService) Delete(ctx context.Context, id int64) error {
+	if id <= 0 {
+		return fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+	}
+
+	return s.transactor.WithTx(ctx, func(taskRepo Repository, templateRepo TemplateRepository) error {
+		if err := taskRepo.DeleteFutureNewByTemplateID(ctx, id); err != nil {
+			return err
+		}
+
+		return templateRepo.Delete(ctx, id)
+	})
+}
+
+func (s *TemplateService) List(ctx context.Context) ([]taskdomain.TaskTemplate, error) {
+	return s.templateRepo.List(ctx)
+}
+
+func (s *TemplateService) RefreshTasks(ctx context.Context) error {
+	templates, err := s.templateRepo.List(ctx)
+	if err != nil {
+		return err
+	}
+
+	today := s.today()
+	for _, t := range templates {
+		t := t
+		if err := s.generateAndSaveTasks(ctx, s.taskRepo, &t, today); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (s *TemplateService) generateAndSaveTasks(ctx context.Context, taskRepo Repository, template *taskdomain.TaskTemplate, from time.Time) error {
+	dates := GenerateDates(template, from)
+
+	for _, d := range dates {
+		d := d
+		task := &taskdomain.Task{
+			Title:        template.Title,
+			Description:  template.Description,
+			Status:       taskdomain.StatusNew,
+			TemplateID:   &template.ID,
+			ScheduledFor: &d,
+			CreatedAt:    s.now(),
+			UpdatedAt:    s.now(),
+		}
+
+		if _, err := taskRepo.Create(ctx, task); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (s *TemplateService) today() time.Time {
+	now := s.now()
+	return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+func validateCreateTemplateInput(input CreateTemplateInput) error {
+	input.Title = strings.TrimSpace(input.Title)
+	if input.Title == "" {
+		return fmt.Errorf("%w: title is required", ErrInvalidInput)
+	}
+
+	if !input.ScheduleType.Valid() {
+		return fmt.Errorf("%w: invalid schedule_type", ErrInvalidInput)
+	}
+
+	return validateScheduleFields(input.ScheduleType, input.EveryNDays, input.DayOfMonth)
+}
+
+func validateUpdateTemplateInput(input UpdateTemplateInput) error {
+	input.Title = strings.TrimSpace(input.Title)
+	if input.Title == "" {
+		return fmt.Errorf("%w: title is required", ErrInvalidInput)
+	}
+
+	if !input.ScheduleType.Valid() {
+		return fmt.Errorf("%w: invalid schedule_type", ErrInvalidInput)
+	}
+
+	return validateScheduleFields(input.ScheduleType, input.EveryNDays, input.DayOfMonth)
+}
+
+func validateScheduleFields(scheduleType taskdomain.ScheduleType, everyNDays *int, dayOfMonth *int) error {
+	switch scheduleType {
+	case taskdomain.ScheduleTypeDaily:
+		if everyNDays == nil || *everyNDays < 1 {
+			return fmt.Errorf("%w: every_n_days must be >= 1 for daily schedule", ErrInvalidInput)
+		}
+	case taskdomain.ScheduleTypeMonthlyDay:
+		if dayOfMonth == nil || *dayOfMonth < 1 || *dayOfMonth > 30 {
+			return fmt.Errorf("%w: day_of_month must be between 1 and 30 for monthly_day schedule", ErrInvalidInput)
+		}
+	}
+
+	return nil
+}
+
+
+================================================================================
+📁 ПАПКА: daniil3006/migrations/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: migrations\0001_create_tasks.up.sql
+Размер: 318 байт
+────────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS tasks (
+	id BIGSERIAL PRIMARY KEY,
+	title TEXT NOT NULL,
+	description TEXT NOT NULL DEFAULT '',
+	status TEXT NOT NULL,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks (status);
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: migrations\0002_add_task_templates.up.sql
+Размер: 1,365 байт
+────────────────────────────────────────────────────────────────────────────────
+CREATE TYPE schedule_type AS ENUM (
+    'daily',
+    'monthly_day',
+    'even_days',
+    'odd_days'
+);
+
+CREATE TABLE task_templates
+(
+    id            BIGSERIAL     PRIMARY KEY,
+    title         TEXT          NOT NULL,
+    description   TEXT          NOT NULL DEFAULT '',
+    schedule_type schedule_type NOT NULL,
+    every_n_days  INT           NULL,
+    day_of_month  INT           NULL,
+    start_date    DATE          NOT NULL,
+    created_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT chk_daily CHECK (
+        schedule_type != 'daily'
+        OR (every_n_days IS NOT NULL AND every_n_days >= 1)),
+
+    CONSTRAINT chk_monthly_day CHECK (
+        schedule_type != 'monthly_day'
+        OR (day_of_month IS NOT NULL AND day_of_month BETWEEN 1 AND 30)),
+
+    CONSTRAINT chk_no_orphan_every_n_days
+        CHECK (schedule_type = 'daily' OR every_n_days IS NULL),
+
+    CONSTRAINT chk_no_orphan_day_of_month
+        CHECK (schedule_type = 'monthly_day' OR day_of_month IS NULL)
+);
+
+ALTER TABLE tasks
+    ADD COLUMN template_id   BIGINT NULL REFERENCES task_templates(id) ON DELETE SET NULL,
+    ADD COLUMN scheduled_for DATE   NULL;
+
+CREATE UNIQUE INDEX idx_tasks_template_scheduled
+    ON tasks (template_id, scheduled_for) WHERE template_id IS NOT NULL;
+
+================================================================================
+СТАТИСТИКА ЭКСПОРТА
+================================================================================
+Всего обработано файлов: 28
+Всего пропущено файлов: 2
+Общий размер выходного файла: 91,429 байт

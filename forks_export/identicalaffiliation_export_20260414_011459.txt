@@ -1,0 +1,3671 @@
+================================================================================
+ЭКСПОРТ РЕПОЗИТОРИЯ: identicalaffiliation
+Путь: C:\Users\vladk\Desktop\test\forks\identicalaffiliation
+Дата экспорта: 2026-04-14 01:14:59
+================================================================================
+
+
+================================================================================
+📁 ПАПКА: identicalaffiliation/
+================================================================================
+
+[ПРОПУЩЕН] .dockerignore (бинарный/служебный/слишком большой)
+
+[ПРОПУЩЕН] .gitignore (бинарный/служебный/слишком большой)
+
+[ПРОПУЩЕН] .mockery.yml (бинарный/служебный/слишком большой)
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: Dockerfile
+Размер: 414 байт
+────────────────────────────────────────────────────────────────────────────────
+FROM golang:1.23.0-alpine AS builder
+
+WORKDIR /src
+
+RUN apk add --no-cache ca-certificates
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/taskservice ./cmd/api
+
+FROM alpine:3.21
+
+WORKDIR /app
+
+RUN apk add --no-cache ca-certificates
+
+COPY --from=builder /out/taskservice /app/taskservice
+
+EXPOSE 8080
+
+CMD ["/app/taskservice"]
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: Makefile
+Размер: 253 байт
+────────────────────────────────────────────────────────────────────────────────
+.PHONY: up down test
+
+up:
+	docker compose up -d --build
+
+down:
+	docker compose down -v
+
+test_unit:
+	go test -v -cover ./...
+
+test_integration:
+	docker compose up -d --build
+	go test -v -cover ./... -tags=integration
+	docker compose down -v
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: README.md
+Размер: 4,617 байт
+────────────────────────────────────────────────────────────────────────────────
+# Task Service
+
+Сервис для управления задачами с HTTP API на Go.
+
+## Требования
+
+- Go `1.23+`
+- Docker и Docker Compose
+
+## Быстрый запуск через Docker Compose
+
+```bash
+docker compose up --build
+```
+
+После запуска сервис будет доступен по адресу `http://localhost:8080`.
+
+Если `postgres` уже запускался ранее со старой схемой, пересоздай volume:
+
+```bash
+docker compose down -v
+docker compose up --build
+```
+
+Причина в том, что SQL-файл из `migrations/0001_create_tasks.up.sql` монтируется в `docker-entrypoint-initdb.d` и применяется только при инициализации пустого data volume.
+
+## Swagger
+
+Swagger UI:
+
+```text
+http://localhost:8080/swagger/
+```
+
+OpenAPI JSON:
+
+```text
+http://localhost:8080/swagger/openapi.json
+```
+
+## API
+
+Базовый префикс API:
+
+```text
+/api/v1
+```
+
+Основные маршруты:
+
+- `POST /api/v1/tasks`
+- `GET /api/v1/tasks`
+- `GET /api/v1/tasks/{id}`
+- `PUT /api/v1/tasks/{id}`
+- `DELETE /api/v1/tasks/{id}`
+
+### Периодические задачи (новая фича)
+
+При создании задачи можно задать **расписание (schedule)**.
+
+### Особенности реализации
+* Расписание вынесено в отдельную таблицу schedules, что позволяет:
+  * не усложнять модель tasks
+  * гибко расширять логику расписаний
+  * хранить разные типы расписаний без изменения основной таблицы
+
+* Связь реализована через:
+  tasks.id → schedules.task_id
+  
+* Используется подход:
+  * исходная задача (source task) — содержит расписание
+  * сгенерированные задачи — создаются автоматически и содержат source_task_id
+* Сгенерированные задачи:
+  * не имеют собственного расписания
+  * являются обычными задачами
+  * используются для выполнения пользователем
+
+### Поддерживаются типы:
+
+| Тип | Описание |
+|-----|--------|
+| `daily` | каждые N дней |
+| `monthly` | в определённые дни месяца |
+| `specific_dates` | в конкретные даты |
+| `parity` | по чётным / нечётным дням |
+
+---
+
+### Автоматическая генерация задач
+
+Встроенный scheduler:
+
+- запускается при старте приложения
+- работает каждые 60 секунд
+- создает новые задачи на основе расписания
+
+Особенности:
+- новые задачи создаются с `source_task_id`
+- повторная генерация за один день исключена
+
+---
+
+## Пример расписания
+
+### Daily
+
+```json
+{
+  "type": "daily",
+  "every_n_days": 1
+}
+```
+
+### Monthly
+
+```json
+{
+  "type": "monthly",
+  "month_days": [1, 15, 30]
+}
+```
+
+### Specific dates
+
+```json
+{
+  "type": "specific_dates",
+  "specific_dates": ["2026-04-10", "2026-04-20"]
+}
+```
+
+### Parity
+```json
+{
+  "type": "parity",
+  "parity": "even"
+}
+```
+
+## Особенность Update
+При обновлении задачи:
+если поле schedule не передано → расписание удаляется
+если передано → обновляется
+
+### Makefile
+Был добавлен Makefile с 4 таргетами для удобного развертывания и тестирования локально.
+| Таргет | Описание |
+|-----|--------|
+| `up` | запуск приложения |
+| `down` | остановка приложения |
+| `test_unit` | запуск unit тестов |
+| `test_integration` | запуск интеграционных тестов |
+
+### Тестирование
+Была покрыта новая фича тестами, общее покрытие составляет ~50-55%.
+
+### Swagger
+Был переработан сваггер, теперь он содержит документацию также с новой фичой.
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: docker-compose.yml
+Размер: 1,080 байт
+────────────────────────────────────────────────────────────────────────────────
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: taskservice
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5431:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d taskservice"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations/0001_create_tasks.up.sql:/docker-entrypoint-initdb.d/001_create_tasks.sql:ro
+      - ./migrations/0002_add_source_task_id_to_tasks.up.sql:/docker-entrypoint-initdb.d/002_add_source_task_id_to_tasks.sql:ro
+      - ./migrations/0003_create_schedules.up.sql:/docker-entrypoint-initdb.d/003_create_schedules.sql:ro
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      HTTP_ADDR: :8080
+      DATABASE_DSN: postgres://postgres:postgres@postgres:5432/taskservice?sslmode=disable
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: go.mod
+Размер: 710 байт
+────────────────────────────────────────────────────────────────────────────────
+module example.com/taskservice
+
+go 1.23.0
+
+require (
+	github.com/gorilla/mux v1.8.1
+	github.com/jackc/pgx/v5 v5.7.6
+)
+
+require (
+	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/pmezard/go-difflib v1.0.0 // indirect
+	github.com/stretchr/objx v0.5.2 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
+)
+
+require (
+	github.com/google/uuid v1.6.0
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
+	github.com/stretchr/testify v1.11.1
+	golang.org/x/crypto v0.37.0 // indirect
+	golang.org/x/sync v0.13.0 // indirect
+	golang.org/x/text v0.24.0 // indirect
+)
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: go.sum
+Размер: 3,160 байт
+────────────────────────────────────────────────────────────────────────────────
+github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
+github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
+github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
+github.com/gorilla/mux v1.8.1 h1:TuBL49tXwgrFYWhqrNgrUNEY92u81SPhu7sTdzQEiWY=
+github.com/gorilla/mux v1.8.1/go.mod h1:AKf9I4AEqPTmMytcMc0KkNouC66V3BtZ4qD5fmWSiMQ=
+github.com/jackc/pgpassfile v1.0.0 h1:/6Hmqy13Ss2zCq62VdNG8tM1wchn8zjSGOBJ6icpsIM=
+github.com/jackc/pgpassfile v1.0.0/go.mod h1:CEx0iS5ambNFdcRtxPj5JhEz+xB6uRky5eyVu/W2HEg=
+github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 h1:iCEnooe7UlwOQYpKFhBabPMi4aNAfoODPEFNiAnClxo=
+github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761/go.mod h1:5TJZWKEWniPve33vlWYSoGYefn3gLQRzjfDlhSJ9ZKM=
+github.com/jackc/pgx/v5 v5.7.6 h1:rWQc5FwZSPX58r1OQmkuaNicxdmExaEz5A2DO2hUuTk=
+github.com/jackc/pgx/v5 v5.7.6/go.mod h1:aruU7o91Tc2q2cFp5h4uP3f6ztExVpyVv88Xl/8Vl8M=
+github.com/jackc/puddle/v2 v2.2.2 h1:PR8nw+E/1w0GLuRFSmiioY6UooMp6KJv0/61nB7icHo=
+github.com/jackc/puddle/v2 v2.2.2/go.mod h1:vriiEXHvEE654aYKXXjOvZM39qJ0q+azkZFrfEOc3H4=
+github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
+github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
+github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
+github.com/stretchr/objx v0.5.2 h1:xuMeJ0Sdp5ZMRXx/aWO6RZxdr3beISkG5/G/aIRr3pY=
+github.com/stretchr/objx v0.5.2/go.mod h1:FRsXN1f5AsAjCGJKqEizvkpNtU+EGNCLh3NxZ/8L+MA=
+github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UVUgZn+9EI=
+github.com/stretchr/testify v1.7.0/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
+github.com/stretchr/testify v1.8.1 h1:w7B6lhMri9wdJUVmEZPGGhZzrYTPvgJArz7wNPgYKsk=
+github.com/stretchr/testify v1.8.1/go.mod h1:w2LPCIKwWwSfY2zedu0+kehJoqGctiVI29o6fzry7u4=
+github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
+github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
+golang.org/x/crypto v0.37.0 h1:kJNSjF/Xp7kU0iB2Z+9viTPMW4EqqsrywMXLJOOsXSE=
+golang.org/x/crypto v0.37.0/go.mod h1:vg+k43peMZ0pUMhYmVAWysMK35e6ioLh3wB8ZCAfbVc=
+golang.org/x/sync v0.13.0 h1:AauUjRAJ9OSnvULf/ARrrVywoJDy0YS2AwQ98I37610=
+golang.org/x/sync v0.13.0/go.mod h1:1dzgHSNfp02xaA81J2MS99Qcpr2w7fw1gpm99rleRqA=
+golang.org/x/text v0.24.0 h1:dd5Bzh4yt5KYA8f9CJHCP4FB4D51c2c6JvN37xJJkJ0=
+golang.org/x/text v0.24.0/go.mod h1:L8rBsPeo2pSS+xqN0d5u2ikmjtmoJbDBT1b7nHvFCdU=
+gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
+gopkg.in/yaml.v3 v3.0.0-20200313102051-9f266ea9e77c/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
+gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+
+
+================================================================================
+📁 ПАПКА: identicalaffiliation/cmd/
+================================================================================
+
+================================================================================
+📁 ПАПКА: identicalaffiliation/cmd\api/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: cmd\api\main.go
+Размер: 3,146 байт
+────────────────────────────────────────────────────────────────────────────────
+package main
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	infrastructurepostgres "example.com/taskservice/internal/infrastructure/postgres"
+	postgresrepo "example.com/taskservice/internal/repository/postgres"
+	transporthttp "example.com/taskservice/internal/transport/http"
+	swaggerdocs "example.com/taskservice/internal/transport/http/docs"
+	httphandlers "example.com/taskservice/internal/transport/http/handlers"
+	"example.com/taskservice/internal/usecase/task"
+)
+
+func main() {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
+
+	cfg := loadConfig()
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	pool, err := infrastructurepostgres.Open(ctx, cfg.DatabaseDSN)
+	if err != nil {
+		logger.Error("open postgres", "error", err)
+		os.Exit(1)
+	}
+	defer pool.Close()
+
+	tasksRepo := postgresrepo.NewTasksRepository(pool)
+	schedulesRepo := postgresrepo.NewSchedulesRepository(pool)
+	taskUsecase := task.NewService(tasksRepo, schedulesRepo)
+	taskHandler := httphandlers.NewTaskHandler(taskUsecase)
+	docsHandler := swaggerdocs.NewHandler()
+	router := transporthttp.NewRouter(taskHandler, docsHandler)
+
+	logger.Info("scheduler started", "interval", "1m")
+	startTaskScheduler(ctx, taskUsecase, logger)
+
+	server := &http.Server{
+		Addr:              cfg.HTTPAddr,
+		Handler:           router,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	go func() {
+		<-ctx.Done()
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			logger.Error("shutdown http server", "error", err)
+		}
+	}()
+
+	logger.Info("http server started", "addr", cfg.HTTPAddr)
+
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		logger.Error("listen and serve", "error", err)
+		os.Exit(1)
+	}
+}
+
+type config struct {
+	HTTPAddr    string
+	DatabaseDSN string
+}
+
+func loadConfig() config {
+	cfg := config{
+		HTTPAddr:    envOrDefault("HTTP_ADDR", ":8080"),
+		DatabaseDSN: envOrDefault("DATABASE_DSN", "postgres://postgres:postgres@localhost:5432/taskservice?sslmode=disable"),
+	}
+
+	if cfg.DatabaseDSN == "" {
+		panic(fmt.Errorf("DATABASE_DSN is required"))
+	}
+
+	return cfg
+}
+
+func envOrDefault(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+
+	return fallback
+}
+
+func startTaskScheduler(ctx context.Context, taskService *task.Service, logger *slog.Logger) {
+	go func() {
+		run := func() {
+			runCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+
+			if err := taskService.GenerateScheduledTasks(runCtx, time.Now().UTC()); err != nil {
+				logger.Error("generate schedule task", "error", err)
+			}
+		}
+
+		run()
+
+		ticker := time.NewTicker(1 * time.Minute)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				logger.Info("scheduler stopped")
+				return
+			case <-ticker.C:
+				run()
+			}
+		}
+	}()
+}
+
+
+================================================================================
+📁 ПАПКА: identicalaffiliation/internal/
+================================================================================
+
+================================================================================
+📁 ПАПКА: identicalaffiliation/internal\domain/
+================================================================================
+
+================================================================================
+📁 ПАПКА: identicalaffiliation/internal\domain\schedule/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\domain\schedule\errors.go
+Размер: 168 байт
+────────────────────────────────────────────────────────────────────────────────
+package schedule
+
+import "errors"
+
+var (
+	ErrInvalidScheduleType = errors.New("invalid schedule type")
+	ErrInvalidParity       = errors.New("invalid parity")
+)
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\domain\schedule\parity.go
+Размер: 680 байт
+────────────────────────────────────────────────────────────────────────────────
+package schedule
+
+type DayParity int
+
+const (
+	DayParityUnknown DayParity = iota
+	DayParityEven
+	DayParityOdd
+)
+
+var parityToString = map[DayParity]string{
+	DayParityEven: "even",
+	DayParityOdd:  "odd",
+}
+
+var parityFromString = map[string]DayParity{
+	"even": DayParityEven,
+	"odd":  DayParityOdd,
+}
+
+func (p DayParity) String() string {
+	if s, ok := parityToString[p]; ok {
+		return s
+	}
+	return unknown
+}
+
+func ParseDayParity(s string) (DayParity, error) {
+	if p, ok := parityFromString[s]; ok {
+		return p, nil
+	}
+
+	return DayParityUnknown, ErrInvalidParity
+}
+
+func (p DayParity) IsValid() bool {
+	_, ok := parityToString[p]
+	return ok
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\domain\schedule\schedule.go
+Размер: 1,382 байт
+────────────────────────────────────────────────────────────────────────────────
+package schedule
+
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
+
+const (
+	unknown = "unknown"
+)
+
+type Schedule struct {
+	ID            uuid.UUID
+	TaskID        int64
+	Type          ScheduleType
+	EveryNDays    *int
+	MonthDays     []int
+	SpecificDates []time.Time
+	Parity        *DayParity
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+}
+
+type ScheduleType int
+
+const (
+	ScheduleTypeUnknown ScheduleType = iota
+	ScheduleTypeDaily
+	ScheduleTypeMonthly
+	ScheduleTypeSpecificDates
+	ScheduleTypeParity
+)
+
+var scheduleTypeToString = map[ScheduleType]string{
+	ScheduleTypeDaily:         "daily",
+	ScheduleTypeMonthly:       "monthly",
+	ScheduleTypeSpecificDates: "specific_dates",
+	ScheduleTypeParity:        "parity",
+}
+
+var scheduleTypeFromString = map[string]ScheduleType{
+	"daily":          ScheduleTypeDaily,
+	"monthly":        ScheduleTypeMonthly,
+	"specific_dates": ScheduleTypeSpecificDates,
+	"parity":         ScheduleTypeParity,
+}
+
+func (t ScheduleType) String() string {
+	if s, ok := scheduleTypeToString[t]; ok {
+		return s
+	}
+	return unknown
+}
+
+func ParseScheduleType(s string) (ScheduleType, error) {
+	if t, ok := scheduleTypeFromString[s]; ok {
+		return t, nil
+	}
+	return ScheduleTypeUnknown, ErrInvalidScheduleType
+}
+
+func (t ScheduleType) IsValid() bool {
+	_, ok := scheduleTypeToString[t]
+	return ok
+}
+
+
+================================================================================
+📁 ПАПКА: identicalaffiliation/internal\domain\task/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\domain\task\errors.go
+Размер: 83 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import "errors"
+
+var ErrNotFound = errors.New("task not found")
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\domain\task\task.go
+Размер: 910 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import (
+	"time"
+
+	scheduleDomain "example.com/taskservice/internal/domain/schedule"
+)
+
+type Status string
+
+const (
+	StatusNew        Status = "new"
+	StatusInProgress Status = "in_progress"
+	StatusDone       Status = "done"
+)
+
+type Task struct {
+	ID           int64                    `json:"id"`
+	Title        string                   `json:"title"`
+	Description  string                   `json:"description"`
+	Status       Status                   `json:"status"`
+	SourceTaskID *int64                   `json:"source_task_id,omitempty"`
+	Schedule     *scheduleDomain.Schedule `json:"schedule,omitempty"`
+	CreatedAt    time.Time                `json:"created_at"`
+	UpdatedAt    time.Time                `json:"updated_at"`
+}
+
+func (s Status) Valid() bool {
+	switch s {
+	case StatusNew, StatusInProgress, StatusDone:
+		return true
+	default:
+		return false
+	}
+}
+
+
+================================================================================
+📁 ПАПКА: identicalaffiliation/internal\infrastructure/
+================================================================================
+
+================================================================================
+📁 ПАПКА: identicalaffiliation/internal\infrastructure\postgres/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\infrastructure\postgres\pool.go
+Размер: 512 байт
+────────────────────────────────────────────────────────────────────────────────
+package postgres
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+func Open(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
+	if dsn == "" {
+		return nil, fmt.Errorf("database dsn is empty")
+	}
+
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, err
+	}
+
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, err
+	}
+
+	return pool, nil
+}
+
+
+================================================================================
+📁 ПАПКА: identicalaffiliation/internal\repository/
+================================================================================
+
+================================================================================
+📁 ПАПКА: identicalaffiliation/internal\repository\postgres/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\repository\postgres\schedule_repository.go
+Размер: 3,241 байт
+────────────────────────────────────────────────────────────────────────────────
+package postgres
+
+import (
+	"context"
+	"time"
+
+	"example.com/taskservice/internal/domain/schedule"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+type schedulesRepository struct {
+	pool *pgxpool.Pool
+}
+
+func NewSchedulesRepository(pool *pgxpool.Pool) *schedulesRepository {
+	return &schedulesRepository{pool: pool}
+}
+
+func (r *schedulesRepository) Create(ctx context.Context, s *schedule.Schedule) error {
+	query := `
+		INSERT INTO schedules (
+			id,
+			task_id,
+			type,
+			every_n_days,
+			month_days,
+			specific_dates,
+			parity,
+			created_at,
+			updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+	`
+
+	_, err := r.pool.Exec(
+		ctx,
+		query,
+		s.ID,
+		s.TaskID,
+		s.Type,
+		s.EveryNDays,
+		intSliceToInt32(s.MonthDays),
+		s.SpecificDates,
+		s.Parity,
+		s.CreatedAt,
+		s.UpdatedAt,
+	)
+
+	return err
+}
+
+func (r *schedulesRepository) GetByTaskID(ctx context.Context, taskID int64) (*schedule.Schedule, error) {
+	query := `
+		SELECT
+			id,
+			task_id,
+			type,
+			every_n_days,
+			month_days,
+			specific_dates,
+			parity,
+			created_at,
+			updated_at
+		FROM schedules
+		WHERE task_id = $1
+	`
+
+	row := r.pool.QueryRow(ctx, query, taskID)
+
+	return scanSchedule(row)
+}
+
+func (r *schedulesRepository) Upsert(ctx context.Context, s *schedule.Schedule) error {
+	query := `
+		INSERT INTO schedules (
+			task_id,
+			type,
+			every_n_days,
+			month_days,
+			specific_dates,
+			parity,
+			created_at,
+			updated_at
+		)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+		ON CONFLICT (task_id)
+		DO UPDATE SET
+			type = EXCLUDED.type,
+			every_n_days = EXCLUDED.every_n_days,
+			month_days = EXCLUDED.month_days,
+			specific_dates = EXCLUDED.specific_dates,
+			parity = EXCLUDED.parity,
+			updated_at = EXCLUDED.updated_at
+	`
+
+	_, err := r.pool.Exec(
+		ctx,
+		query,
+		s.TaskID,
+		s.Type,
+		s.EveryNDays,
+		intSliceToInt32(s.MonthDays),
+		s.SpecificDates,
+		s.Parity,
+		s.CreatedAt,
+		s.UpdatedAt,
+	)
+
+	return err
+}
+
+func (r *schedulesRepository) DeleteByTaskID(ctx context.Context, taskID int64) error {
+	query := `
+		DELETE FROM schedules
+		WHERE task_id = $1
+	`
+
+	_, err := r.pool.Exec(ctx, query, taskID)
+	return err
+}
+
+func scanSchedule(scanner interface {
+	Scan(dest ...any) error
+}) (*schedule.Schedule, error) {
+	var s schedule.Schedule
+
+	var everyNDays *int32
+	var monthDays []int32
+	var specificDates []time.Time
+	var parity *int16
+
+	err := scanner.Scan(
+		&s.ID,
+		&s.TaskID,
+		&s.Type,
+		&everyNDays,
+		&monthDays,
+		&specificDates,
+		&parity,
+		&s.CreatedAt,
+		&s.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if everyNDays != nil {
+		v := int(*everyNDays)
+		s.EveryNDays = &v
+	}
+
+	if len(monthDays) > 0 {
+		s.MonthDays = make([]int, len(monthDays))
+		for i, d := range monthDays {
+			s.MonthDays[i] = int(d)
+		}
+	}
+
+	if len(specificDates) > 0 {
+		s.SpecificDates = specificDates
+	}
+
+	if parity != nil {
+		p := schedule.DayParity(*parity)
+		s.Parity = &p
+	}
+
+	return &s, nil
+}
+
+func intSliceToInt32(values []int) []int32 {
+	if len(values) == 0 {
+		return nil
+	}
+
+	result := make([]int32, len(values))
+	for i, v := range values {
+		result[i] = int32(v)
+	}
+
+	return result
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\repository\postgres\schedule_test.go
+Размер: 4,135 байт
+────────────────────────────────────────────────────────────────────────────────
+//go:build integration
+
+package postgres
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	scheduledomain "example.com/taskservice/internal/domain/schedule"
+	taskdomain "example.com/taskservice/internal/domain/task"
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestSchedulesRepository_Create(t *testing.T) {
+	ctx := context.Background()
+	pool := initTestPool(t)
+
+	repo := NewSchedulesRepository(pool)
+
+	taskRepo := NewTasksRepository(pool)
+
+	now := time.Now()
+
+	task, err := taskRepo.Create(ctx, &taskdomain.Task{
+		Title:       "task 1",
+		Description: "desc 1",
+		Status:      taskdomain.StatusNew,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	})
+	require.NoError(t, err)
+
+	everyNDays := 2
+
+	s := &scheduledomain.Schedule{
+		ID:         uuid.New(),
+		TaskID:     task.ID,
+		Type:       scheduledomain.ScheduleTypeDaily,
+		EveryNDays: &everyNDays,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+
+	err = repo.Create(ctx, s)
+	require.NoError(t, err)
+}
+
+func TestSchedulesRepository_GetByTaskID(t *testing.T) {
+	ctx := context.Background()
+	pool := initTestPool(t)
+
+	repo := NewSchedulesRepository(pool)
+	taskRepo := NewTasksRepository(pool)
+
+	now := time.Now()
+
+	task, err := taskRepo.Create(ctx, &taskdomain.Task{
+		Title:       "task 2",
+		Description: "desc 2",
+		Status:      taskdomain.StatusNew,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	})
+	require.NoError(t, err)
+
+	everyNDays := 3
+
+	expected := &scheduledomain.Schedule{
+		ID:         uuid.New(),
+		TaskID:     task.ID,
+		Type:       scheduledomain.ScheduleTypeDaily,
+		EveryNDays: &everyNDays,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+
+	err = repo.Create(ctx, expected)
+	require.NoError(t, err)
+
+	got, err := repo.GetByTaskID(ctx, task.ID)
+	require.NoError(t, err)
+
+	assert.Equal(t, expected.TaskID, got.TaskID)
+	assert.Equal(t, expected.Type, got.Type)
+	require.NotNil(t, got.EveryNDays)
+	assert.Equal(t, *expected.EveryNDays, *got.EveryNDays)
+}
+
+func TestSchedulesRepository_Upsert(t *testing.T) {
+	ctx := context.Background()
+	pool := initTestPool(t)
+
+	repo := NewSchedulesRepository(pool)
+	taskRepo := NewTasksRepository(pool)
+
+	now := time.Now()
+
+	task, err := taskRepo.Create(ctx, &taskdomain.Task{
+		Title:       "task 3",
+		Description: "desc 3",
+		Status:      taskdomain.StatusNew,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	})
+	require.NoError(t, err)
+
+	everyNDays := 2
+
+	err = repo.Upsert(ctx, &scheduledomain.Schedule{
+		TaskID:     task.ID,
+		Type:       scheduledomain.ScheduleTypeDaily,
+		EveryNDays: &everyNDays,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	})
+	require.NoError(t, err)
+
+	got, err := repo.GetByTaskID(ctx, task.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got.EveryNDays)
+	assert.Equal(t, 2, *got.EveryNDays)
+
+	updatedEveryNDays := 5
+
+	err = repo.Upsert(ctx, &scheduledomain.Schedule{
+		TaskID:     task.ID,
+		Type:       scheduledomain.ScheduleTypeDaily,
+		EveryNDays: &updatedEveryNDays,
+		CreatedAt:  now,
+		UpdatedAt:  time.Now(),
+	})
+	require.NoError(t, err)
+
+	got, err = repo.GetByTaskID(ctx, task.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got.EveryNDays)
+	assert.Equal(t, 5, *got.EveryNDays)
+}
+
+func TestSchedulesRepository_DeleteByTaskID(t *testing.T) {
+	ctx := context.Background()
+	pool := initTestPool(t)
+
+	repo := NewSchedulesRepository(pool)
+	taskRepo := NewTasksRepository(pool)
+
+	now := time.Now()
+
+	task, err := taskRepo.Create(ctx, &taskdomain.Task{
+		Title:       "task 4",
+		Description: "desc 4",
+		Status:      taskdomain.StatusNew,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	})
+	require.NoError(t, err)
+
+	everyNDays := 1
+
+	err = repo.Create(ctx, &scheduledomain.Schedule{
+		ID:         uuid.New(),
+		TaskID:     task.ID,
+		Type:       scheduledomain.ScheduleTypeDaily,
+		EveryNDays: &everyNDays,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	})
+	require.NoError(t, err)
+
+	err = repo.DeleteByTaskID(ctx, task.ID)
+	require.NoError(t, err)
+
+	_, err = repo.GetByTaskID(ctx, task.ID)
+	require.Error(t, err)
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\repository\postgres\task_repository.go
+Размер: 4,537 байт
+────────────────────────────────────────────────────────────────────────────────
+package postgres
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type tasksRepository struct {
+	pool *pgxpool.Pool
+}
+
+func NewTasksRepository(pool *pgxpool.Pool) *tasksRepository {
+	return &tasksRepository{pool: pool}
+}
+
+func (r *tasksRepository) Create(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error) {
+	const query = `
+		INSERT INTO tasks (
+			title,
+			description,
+			status,
+			source_task_id,
+			created_at,
+			updated_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id, title, description, status, source_task_id, created_at, updated_at
+	`
+
+	row := r.pool.QueryRow(
+		ctx,
+		query,
+		task.Title,
+		task.Description,
+		task.Status,
+		task.SourceTaskID,
+		task.CreatedAt,
+		task.UpdatedAt,
+	)
+
+	created, err := scanTask(row)
+	if err != nil {
+		return nil, err
+	}
+
+	return created, nil
+}
+
+func (r *tasksRepository) GetByID(ctx context.Context, id int64) (*taskdomain.Task, error) {
+	const query = `
+		SELECT id, title, description, status, source_task_id, created_at, updated_at
+		FROM tasks
+		WHERE id = $1
+	`
+
+	row := r.pool.QueryRow(ctx, query, id)
+	found, err := scanTask(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, taskdomain.ErrNotFound
+		}
+
+		return nil, err
+	}
+
+	return found, nil
+}
+
+func (r *tasksRepository) Update(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error) {
+	const query = `
+		UPDATE tasks
+		SET title = $1,
+			description = $2,
+			status = $3,
+			updated_at = $4
+		WHERE id = $5
+		RETURNING id, title, description, status, source_task_id, created_at, updated_at
+	`
+
+	row := r.pool.QueryRow(
+		ctx,
+		query,
+		task.Title,
+		task.Description,
+		task.Status,
+		task.UpdatedAt,
+		task.ID,
+	)
+
+	updated, err := scanTask(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, taskdomain.ErrNotFound
+		}
+
+		return nil, err
+	}
+
+	return updated, nil
+}
+
+func (r *tasksRepository) Delete(ctx context.Context, id int64) error {
+	const query = `DELETE FROM tasks WHERE id = $1`
+
+	result, err := r.pool.Exec(ctx, query, id)
+	if err != nil {
+		return err
+	}
+
+	if result.RowsAffected() == 0 {
+		return taskdomain.ErrNotFound
+	}
+
+	return nil
+}
+
+func (r *tasksRepository) List(ctx context.Context) ([]taskdomain.Task, error) {
+	const query = `
+		SELECT id, title, description, status, source_task_id, created_at, updated_at
+		FROM tasks
+		ORDER BY id DESC
+	`
+
+	rows, err := r.pool.Query(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	tasks := make([]taskdomain.Task, 0)
+	for rows.Next() {
+		task, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+
+		tasks = append(tasks, *task)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return tasks, nil
+}
+
+func (r *tasksRepository) ListSourceTasks(ctx context.Context) ([]taskdomain.Task, error) {
+	const query = `
+		SELECT t.id, t.title, t.description, t.status, t.source_task_id, t.created_at, t.updated_at
+		FROM tasks t
+		INNER JOIN schedules s ON s.task_id = t.id
+		WHERE t.source_task_id IS NULL
+		ORDER BY t.id DESC
+	`
+
+	rows, err := r.pool.Query(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	tasks := make([]taskdomain.Task, 0)
+	for rows.Next() {
+		task, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+
+		tasks = append(tasks, *task)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return tasks, nil
+}
+
+func (r *tasksRepository) ExistsGeneratedForDate(ctx context.Context, sourceTaskID int64, date time.Time) (bool, error) {
+	const query = `
+		SELECT EXISTS (
+			SELECT 1
+			FROM tasks
+			WHERE source_task_id = $1
+			  AND created_at::date = $2::date
+		)
+	`
+
+	var exists bool
+	err := r.pool.QueryRow(ctx, query, sourceTaskID, date).Scan(&exists)
+	if err != nil {
+		return false, err
+	}
+
+	return exists, nil
+}
+
+type taskScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanTask(scanner taskScanner) (*taskdomain.Task, error) {
+	var (
+		task   taskdomain.Task
+		status string
+	)
+
+	if err := scanner.Scan(
+		&task.ID,
+		&task.Title,
+		&task.Description,
+		&status,
+		&task.SourceTaskID,
+		&task.CreatedAt,
+		&task.UpdatedAt,
+	); err != nil {
+		return nil, err
+	}
+
+	task.Status = taskdomain.Status(status)
+
+	return &task, nil
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\repository\postgres\task_test.go
+Размер: 2,481 байт
+────────────────────────────────────────────────────────────────────────────────
+//go:build integration
+
+package postgres
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	scheduledomain "example.com/taskservice/internal/domain/schedule"
+	taskdomain "example.com/taskservice/internal/domain/task"
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestTasksRepository_ListSourceTasks(t *testing.T) {
+	ctx := context.Background()
+	pool := initTestPool(t)
+
+	taskRepo := NewTasksRepository(pool)
+	scheduleRepo := NewSchedulesRepository(pool)
+
+	now := time.Now()
+
+	sourceTask, err := taskRepo.Create(ctx, &taskdomain.Task{
+		Title:       "source task",
+		Description: "source desc",
+		Status:      taskdomain.StatusNew,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	})
+	require.NoError(t, err)
+
+	everyNDays := 2
+
+	err = scheduleRepo.Create(ctx, &scheduledomain.Schedule{
+		ID:         uuid.New(),
+		TaskID:     sourceTask.ID,
+		Type:       scheduledomain.ScheduleTypeDaily,
+		EveryNDays: &everyNDays,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	})
+	require.NoError(t, err)
+
+	_, err = taskRepo.Create(ctx, &taskdomain.Task{
+		Title:        "generated task",
+		Description:  "generated desc",
+		Status:       taskdomain.StatusNew,
+		SourceTaskID: &sourceTask.ID,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	})
+	require.NoError(t, err)
+
+	tasks, err := taskRepo.ListSourceTasks(ctx)
+	require.NoError(t, err)
+
+	require.Len(t, tasks, 1)
+	assert.Equal(t, sourceTask.ID, tasks[0].ID)
+	assert.Nil(t, tasks[0].SourceTaskID)
+}
+
+func TestTasksRepository_ExistsGeneratedForDate(t *testing.T) {
+	ctx := context.Background()
+	pool := initTestPool(t)
+
+	taskRepo := NewTasksRepository(pool)
+
+	now := time.Now()
+
+	sourceTask, err := taskRepo.Create(ctx, &taskdomain.Task{
+		Title:       "parent",
+		Description: "parent desc",
+		Status:      taskdomain.StatusNew,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	})
+	require.NoError(t, err)
+
+	_, err = taskRepo.Create(ctx, &taskdomain.Task{
+		Title:        "child",
+		Description:  "child desc",
+		Status:       taskdomain.StatusNew,
+		SourceTaskID: &sourceTask.ID,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	})
+	require.NoError(t, err)
+
+	exists, err := taskRepo.ExistsGeneratedForDate(ctx, sourceTask.ID, now)
+	require.NoError(t, err)
+	assert.True(t, exists)
+
+	exists, err = taskRepo.ExistsGeneratedForDate(ctx, sourceTask.ID, now.AddDate(0, 0, 1))
+	require.NoError(t, err)
+	assert.False(t, exists)
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\repository\postgres\test_helper.go
+Размер: 956 байт
+────────────────────────────────────────────────────────────────────────────────
+//go:build integration
+
+package postgres
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/stretchr/testify/require"
+)
+
+func initTestPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+
+	dsn := getTestDSN()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, dsn)
+	require.NoError(t, err)
+
+	cleanupDB(t, pool)
+
+	t.Cleanup(func() {
+		pool.Close()
+	})
+
+	return pool
+}
+
+func getTestDSN() string {
+	return "postgres://postgres:postgres@localhost:5431/taskservice?sslmode=disable"
+}
+
+func cleanupDB(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	queries := []string{
+		`DELETE FROM schedules`,
+		`DELETE FROM tasks`,
+	}
+
+	for _, q := range queries {
+		_, err := pool.Exec(ctx, q)
+		require.NoError(t, err)
+	}
+}
+
+
+================================================================================
+📁 ПАПКА: identicalaffiliation/internal\transport/
+================================================================================
+
+================================================================================
+📁 ПАПКА: identicalaffiliation/internal\transport\http/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\router.go
+Размер: 1,099 байт
+────────────────────────────────────────────────────────────────────────────────
+package transporthttp
+
+import (
+	"net/http"
+
+	"github.com/gorilla/mux"
+
+	swaggerdocs "example.com/taskservice/internal/transport/http/docs"
+	httphandlers "example.com/taskservice/internal/transport/http/handlers"
+)
+
+func NewRouter(taskHandler *httphandlers.TaskHandler, docsHandler *swaggerdocs.Handler) *mux.Router {
+	router := mux.NewRouter().StrictSlash(true)
+
+	router.HandleFunc("/swagger/openapi.json", docsHandler.ServeSpec).Methods(http.MethodGet)
+	router.HandleFunc("/swagger/", docsHandler.ServeUI).Methods(http.MethodGet)
+	router.HandleFunc("/swagger", docsHandler.RedirectToUI).Methods(http.MethodGet)
+
+	api := router.PathPrefix("/api/v1").Subrouter()
+
+	api.HandleFunc("/tasks", taskHandler.Create).Methods(http.MethodPost)
+	api.HandleFunc("/tasks", taskHandler.List).Methods(http.MethodGet)
+	api.HandleFunc("/tasks/{id:[0-9]+}", taskHandler.GetByID).Methods(http.MethodGet)
+	api.HandleFunc("/tasks/{id:[0-9]+}", taskHandler.Update).Methods(http.MethodPut)
+	api.HandleFunc("/tasks/{id:[0-9]+}", taskHandler.Delete).Methods(http.MethodDelete)
+
+	return router
+}
+
+
+================================================================================
+📁 ПАПКА: identicalaffiliation/internal\transport\http\docs/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\docs\handler.go
+Размер: 1,779 байт
+────────────────────────────────────────────────────────────────────────────────
+package docs
+
+import (
+	"embed"
+	"net/http"
+)
+
+//go:embed openapi.json
+var openAPISpec embed.FS
+
+type Handler struct {
+	spec []byte
+}
+
+func NewHandler() *Handler {
+	spec, err := openAPISpec.ReadFile("openapi.json")
+	if err != nil {
+		panic(err)
+	}
+
+	return &Handler{spec: spec}
+}
+
+func (h *Handler) ServeSpec(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+
+	_, _ = w.Write(h.spec)
+}
+
+func (h *Handler) ServeUI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+
+	_, _ = w.Write([]byte(swaggerUIHTML))
+}
+
+func (h *Handler) RedirectToUI(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "/swagger/", http.StatusMovedPermanently)
+}
+
+var swaggerUIHTML = []byte(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Task Service Swagger</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+  <style>
+    body { margin: 0; background: #f6f7fb; }
+    #swagger-ui { max-width: 1440px; margin: 0 auto; }
+  </style>
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js" crossorigin></script>
+  <script>
+    window.onload = function() {
+      window.ui = SwaggerUIBundle({
+        url: '/swagger/openapi.json',
+        dom_id: '#swagger-ui',
+        deepLinking: true,
+        presets: [SwaggerUIBundle.presets.apis],
+        layout: 'BaseLayout'
+      });
+    };
+  </script>
+</body>
+</html>`)
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\docs\openapi.json
+Размер: 8,651 байт
+────────────────────────────────────────────────────────────────────────────────
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Task Service API",
+    "version": "1.1.0",
+    "description": "CRUD API for tasks with recurring schedules and background task generation."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8080"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Tasks",
+      "description": "Operations with tasks"
+    }
+  ],
+  "paths": {
+    "/api/v1/tasks": {
+      "get": {
+        "tags": ["Tasks"],
+        "summary": "List tasks",
+        "responses": {
+          "200": {
+            "description": "Task list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/Task" }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["Tasks"],
+        "summary": "Create task",
+        "description": "Creates a task. Task may optionally include recurrence settings. Recurring tasks are used by background scheduler to generate child tasks automatically.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateTaskRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created task",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Task" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/api/v1/tasks/{id}": {
+      "get": {
+        "tags": ["Tasks"],
+        "summary": "Get task by ID",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Task",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Task" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "put": {
+        "tags": ["Tasks"],
+        "summary": "Update task",
+        "description": "Updates task fields. If schedule is omitted in request, current implementation removes existing schedule.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/UpdateTaskRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated task",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Task" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["Tasks"],
+        "summary": "Delete task",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "responses": {
+          "204": { "description": "Deleted" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    }
+  },
+  "components": {
+    "responses": {
+      "BadRequest": {
+        "description": "Bad request",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Resource not found",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Schedule": {
+        "type": "object",
+        "description": "Optional recurrence settings for a task. Only fields relevant to selected type should be provided.",
+        "required": ["type"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["daily", "monthly", "specific_dates", "parity"],
+            "example": "daily"
+          },
+          "every_n_days": {
+            "type": "integer",
+            "minimum": 1,
+            "example": 2,
+            "description": "Used for type=daily. Task is generated every N days starting from source task creation date."
+          },
+          "month_days": {
+            "type": "array",
+            "description": "Used for type=monthly. Allowed values: 1..30.",
+            "items": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 30
+            },
+            "example": [1, 15, 30]
+          },
+          "specific_dates": {
+            "type": "array",
+            "description": "Used for type=specific_dates.",
+            "items": {
+              "type": "string",
+              "format": "date"
+            },
+            "example": ["2026-04-10", "2026-04-20"]
+          },
+          "parity": {
+            "type": "string",
+            "enum": ["even", "odd"],
+            "example": "even",
+            "description": "Used for type=parity."
+          }
+        }
+      },
+      "CreateTaskRequest": {
+        "type": "object",
+        "required": ["title"],
+        "properties": {
+          "title": {
+            "type": "string",
+            "example": "Prepare release"
+          },
+          "description": {
+            "type": "string",
+            "example": "Collect release notes and check migrations"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["new", "in_progress", "done"],
+            "example": "new"
+          },
+          "schedule": {
+            "$ref": "#/components/schemas/Schedule"
+          }
+        }
+      },
+      "UpdateTaskRequest": {
+        "type": "object",
+        "required": ["title", "status"],
+        "properties": {
+          "title": {
+            "type": "string",
+            "example": "Prepare release"
+          },
+          "description": {
+            "type": "string",
+            "example": "Collect release notes and check migrations"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["new", "in_progress", "done"],
+            "example": "in_progress"
+          },
+          "schedule": {
+            "$ref": "#/components/schemas/Schedule"
+          }
+        }
+      },
+      "Task": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "format": "int64", "example": 1 },
+          "title": { "type": "string", "example": "Prepare release" },
+          "description": {
+            "type": "string",
+            "example": "Collect release notes and check migrations"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["new", "in_progress", "done"],
+            "example": "new"
+          },
+          "source_task_id": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "example": 1,
+            "description": "Reference to source task if this task was generated automatically by scheduler."
+          },
+          "schedule": {
+            "allOf": [
+              { "$ref": "#/components/schemas/Schedule" }
+            ],
+            "nullable": true
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-03-24T00:00:00Z"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-03-24T00:00:00Z"
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": { "type": "string", "example": "task not found" }
+        }
+      }
+    }
+  }
+}
+
+================================================================================
+📁 ПАПКА: identicalaffiliation/internal\transport\http\handlers/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\handlers\dto.go
+Размер: 2,932 байт
+────────────────────────────────────────────────────────────────────────────────
+package handlers
+
+import (
+	"fmt"
+	"time"
+
+	scheduledomain "example.com/taskservice/internal/domain/schedule"
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type scheduleDTO struct {
+	Type          string   `json:"type"`
+	EveryNDays    *int     `json:"every_n_days,omitempty"`
+	MonthDays     []int    `json:"month_days,omitempty"`
+	SpecificDates []string `json:"specific_dates,omitempty"`
+	Parity        *string  `json:"parity,omitempty"`
+}
+
+type taskMutationDTO struct {
+	Title       string            `json:"title"`
+	Description string            `json:"description"`
+	Status      taskdomain.Status `json:"status"`
+	Schedule    *scheduleDTO      `json:"schedule,omitempty"`
+}
+
+type taskDTO struct {
+	ID           int64             `json:"id"`
+	Title        string            `json:"title"`
+	Description  string            `json:"description"`
+	Status       taskdomain.Status `json:"status"`
+	SourceTaskID *int64            `json:"source_task_id,omitempty"`
+	Schedule     *scheduleDTO      `json:"schedule,omitempty"`
+	CreatedAt    time.Time         `json:"created_at"`
+	UpdatedAt    time.Time         `json:"updated_at"`
+}
+
+func newTaskDTO(task *taskdomain.Task) taskDTO {
+	return taskDTO{
+		ID:           task.ID,
+		Title:        task.Title,
+		Description:  task.Description,
+		Status:       task.Status,
+		SourceTaskID: task.SourceTaskID,
+		Schedule:     newScheduleDTO(task.Schedule),
+		CreatedAt:    task.CreatedAt,
+		UpdatedAt:    task.UpdatedAt,
+	}
+}
+
+func newScheduleDTO(s *scheduledomain.Schedule) *scheduleDTO {
+	if s == nil {
+		return nil
+	}
+
+	dto := &scheduleDTO{
+		Type:       s.Type.String(),
+		EveryNDays: s.EveryNDays,
+		MonthDays:  s.MonthDays,
+	}
+
+	if len(s.SpecificDates) > 0 {
+		dto.SpecificDates = make([]string, 0, len(s.SpecificDates))
+		for _, d := range s.SpecificDates {
+			dto.SpecificDates = append(dto.SpecificDates, d.Format("2006-01-02"))
+		}
+	}
+
+	if s.Parity != nil {
+		p := s.Parity.String()
+		dto.Parity = &p
+	}
+
+	return dto
+}
+
+func toDomainSchedule(dto *scheduleDTO) (*scheduledomain.Schedule, error) {
+	if dto == nil {
+		return nil, nil
+	}
+
+	scheduleType, err := scheduledomain.ParseScheduleType(dto.Type)
+	if err != nil {
+		return nil, err
+	}
+
+	s := &scheduledomain.Schedule{
+		Type:       scheduleType,
+		EveryNDays: dto.EveryNDays,
+		MonthDays:  dto.MonthDays,
+	}
+
+	if len(dto.SpecificDates) > 0 {
+		s.SpecificDates = make([]time.Time, 0, len(dto.SpecificDates))
+		for _, raw := range dto.SpecificDates {
+			parsed, err := time.Parse("2006-01-02", raw)
+			if err != nil {
+				return nil, fmt.Errorf("invalid specific date %q", raw)
+			}
+			s.SpecificDates = append(s.SpecificDates, parsed)
+		}
+	}
+
+	if dto.Parity != nil {
+		parity, err := scheduledomain.ParseDayParity(*dto.Parity)
+		if err != nil {
+			return nil, err
+		}
+		s.Parity = &parity
+	}
+
+	return s, nil
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\handlers\task_handler.go
+Размер: 4,083 байт
+────────────────────────────────────────────────────────────────────────────────
+package handlers
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strconv"
+
+	"github.com/gorilla/mux"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+	taskusecase "example.com/taskservice/internal/usecase/task"
+)
+
+type TaskHandler struct {
+	usecase taskusecase.Usecase
+}
+
+func NewTaskHandler(usecase taskusecase.Usecase) *TaskHandler {
+	return &TaskHandler{usecase: usecase}
+}
+
+func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
+	var req taskMutationDTO
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	schedule, err := toDomainSchedule(req.Schedule)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	created, err := h.usecase.Create(r.Context(), taskusecase.CreateInput{
+		Title:       req.Title,
+		Description: req.Description,
+		Status:      req.Status,
+		Schedule:    schedule,
+	})
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, newTaskDTO(created))
+}
+
+func (h *TaskHandler) GetByID(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	task, err := h.usecase.GetByID(r.Context(), id)
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, newTaskDTO(task))
+}
+
+func (h *TaskHandler) Update(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	var req taskMutationDTO
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	schedule, err := toDomainSchedule(req.Schedule)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	updated, err := h.usecase.Update(r.Context(), id, taskusecase.UpdateInput{
+		Title:       req.Title,
+		Description: req.Description,
+		Status:      req.Status,
+		Schedule:    schedule,
+	})
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, newTaskDTO(updated))
+}
+
+func (h *TaskHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	if err := h.usecase.Delete(r.Context(), id); err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
+	tasks, err := h.usecase.List(r.Context())
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	response := make([]taskDTO, 0, len(tasks))
+	for i := range tasks {
+		response = append(response, newTaskDTO(&tasks[i]))
+	}
+
+	writeJSON(w, http.StatusOK, response)
+}
+
+func getIDFromRequest(r *http.Request) (int64, error) {
+	rawID := mux.Vars(r)["id"]
+	if rawID == "" {
+		return 0, errors.New("missing task id")
+	}
+
+	id, err := strconv.ParseInt(rawID, 10, 64)
+	if err != nil {
+		return 0, errors.New("invalid task id")
+	}
+
+	if id <= 0 {
+		return 0, errors.New("invalid task id")
+	}
+
+	return id, nil
+}
+
+func decodeJSON(r *http.Request, dst any) error {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+
+	if err := decoder.Decode(dst); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func writeUsecaseError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, taskdomain.ErrNotFound):
+		writeError(w, http.StatusNotFound, err)
+	case errors.Is(err, taskusecase.ErrInvalidInput):
+		writeError(w, http.StatusBadRequest, err)
+	default:
+		writeError(w, http.StatusInternalServerError, err)
+	}
+}
+
+func writeError(w http.ResponseWriter, status int, err error) {
+	writeJSON(w, status, map[string]string{
+		"error": err.Error(),
+	})
+}
+
+func writeJSON(w http.ResponseWriter, status int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+
+================================================================================
+📁 ПАПКА: identicalaffiliation/internal\usecase/
+================================================================================
+
+================================================================================
+📁 ПАПКА: identicalaffiliation/internal\usecase\task/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\task\errors.go
+Размер: 91 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import "errors"
+
+var ErrInvalidInput = errors.New("invalid task input")
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\task\ports.go
+Размер: 1,684 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import (
+	"context"
+	"time"
+
+	scheduledomain "example.com/taskservice/internal/domain/schedule"
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type TasksRepository interface {
+	Create(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error)
+	GetByID(ctx context.Context, id int64) (*taskdomain.Task, error)
+	Update(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error)
+	Delete(ctx context.Context, id int64) error
+	List(ctx context.Context) ([]taskdomain.Task, error)
+
+	ListSourceTasks(ctx context.Context) ([]taskdomain.Task, error)
+	ExistsGeneratedForDate(ctx context.Context, sourceTaskID int64, date time.Time) (bool, error)
+}
+
+type SchedulesRepository interface {
+	Create(ctx context.Context, schedule *scheduledomain.Schedule) error
+	GetByTaskID(ctx context.Context, taskID int64) (*scheduledomain.Schedule, error)
+	Upsert(ctx context.Context, schedule *scheduledomain.Schedule) error
+	DeleteByTaskID(ctx context.Context, taskID int64) error
+}
+
+type Usecase interface {
+	Create(ctx context.Context, input CreateInput) (*taskdomain.Task, error)
+	GetByID(ctx context.Context, id int64) (*taskdomain.Task, error)
+	Update(ctx context.Context, id int64, input UpdateInput) (*taskdomain.Task, error)
+	Delete(ctx context.Context, id int64) error
+	List(ctx context.Context) ([]taskdomain.Task, error)
+}
+
+type CreateInput struct {
+	Title       string
+	Description string
+	Status      taskdomain.Status
+	Schedule    *scheduledomain.Schedule
+}
+
+type UpdateInput struct {
+	Title       string
+	Description string
+	Status      taskdomain.Status
+	Schedule    *scheduledomain.Schedule
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\task\service.go
+Размер: 7,921 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	scheduledomain "example.com/taskservice/internal/domain/schedule"
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type Service struct {
+	tasksRepo     TasksRepository
+	schedulesRepo SchedulesRepository
+	now           func() time.Time
+}
+
+func NewService(tasksRepo TasksRepository, schedulesRepo SchedulesRepository) *Service {
+	return &Service{
+		tasksRepo:     tasksRepo,
+		schedulesRepo: schedulesRepo,
+		now:           func() time.Time { return time.Now().UTC() },
+	}
+}
+
+func (s *Service) Create(ctx context.Context, input CreateInput) (*taskdomain.Task, error) {
+	normalized, err := validateCreateInput(input)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := validateSchedule(normalized.Schedule); err != nil {
+		return nil, err
+	}
+
+	model := &taskdomain.Task{
+		Title:       normalized.Title,
+		Description: normalized.Description,
+		Status:      normalized.Status,
+	}
+
+	now := s.now()
+	model.CreatedAt = now
+	model.UpdatedAt = now
+
+	created, err := s.tasksRepo.Create(ctx, model)
+	if err != nil {
+		return nil, err
+	}
+
+	if normalized.Schedule != nil {
+		normalized.Schedule.TaskID = created.ID
+		normalized.Schedule.CreatedAt = now
+		normalized.Schedule.UpdatedAt = now
+
+		if err := s.schedulesRepo.Create(ctx, normalized.Schedule); err != nil {
+			return nil, err
+		}
+
+		created.Schedule = normalized.Schedule
+	}
+
+	return created, nil
+}
+
+func (s *Service) GetByID(ctx context.Context, id int64) (*taskdomain.Task, error) {
+	if id <= 0 {
+		return nil, fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+	}
+
+	task, err := s.tasksRepo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	schedule, err := s.schedulesRepo.GetByTaskID(ctx, id)
+	if err == nil {
+		task.Schedule = schedule
+	}
+
+	return task, nil
+}
+
+func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (*taskdomain.Task, error) {
+	if id <= 0 {
+		return nil, fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+	}
+
+	normalized, err := validateUpdateInput(input)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := validateSchedule(normalized.Schedule); err != nil {
+		return nil, err
+	}
+
+	model := &taskdomain.Task{
+		ID:          id,
+		Title:       normalized.Title,
+		Description: normalized.Description,
+		Status:      normalized.Status,
+		UpdatedAt:   s.now(),
+	}
+
+	updated, err := s.tasksRepo.Update(ctx, model)
+	if err != nil {
+		return nil, err
+	}
+
+	if normalized.Schedule == nil {
+		if err := s.schedulesRepo.DeleteByTaskID(ctx, id); err != nil {
+			return nil, err
+		}
+		return updated, nil
+	}
+
+	now := s.now()
+	normalized.Schedule.TaskID = id
+	normalized.Schedule.UpdatedAt = now
+	if normalized.Schedule.CreatedAt.IsZero() {
+		normalized.Schedule.CreatedAt = now
+	}
+
+	if err := s.schedulesRepo.Upsert(ctx, normalized.Schedule); err != nil {
+		return nil, err
+	}
+
+	updated.Schedule = normalized.Schedule
+
+	return updated, nil
+}
+
+func (s *Service) Delete(ctx context.Context, id int64) error {
+	if id <= 0 {
+		return fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+	}
+
+	return s.tasksRepo.Delete(ctx, id)
+}
+
+func (s *Service) List(ctx context.Context) ([]taskdomain.Task, error) {
+	tasks, err := s.tasksRepo.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	for i := range tasks {
+		schedule, err := s.schedulesRepo.GetByTaskID(ctx, tasks[i].ID)
+		if err == nil {
+			tasks[i].Schedule = schedule
+		}
+	}
+
+	return tasks, nil
+}
+
+func validateCreateInput(input CreateInput) (CreateInput, error) {
+	input.Title = strings.TrimSpace(input.Title)
+	input.Description = strings.TrimSpace(input.Description)
+
+	if input.Title == "" {
+		return CreateInput{}, fmt.Errorf("%w: title is required", ErrInvalidInput)
+	}
+
+	if input.Status == "" {
+		input.Status = taskdomain.StatusNew
+	}
+
+	if !input.Status.Valid() {
+		return CreateInput{}, fmt.Errorf("%w: invalid status", ErrInvalidInput)
+	}
+
+	return input, nil
+}
+
+func validateUpdateInput(input UpdateInput) (UpdateInput, error) {
+	input.Title = strings.TrimSpace(input.Title)
+	input.Description = strings.TrimSpace(input.Description)
+
+	if input.Title == "" {
+		return UpdateInput{}, fmt.Errorf("%w: title is required", ErrInvalidInput)
+	}
+
+	if !input.Status.Valid() {
+		return UpdateInput{}, fmt.Errorf("%w: invalid status", ErrInvalidInput)
+	}
+
+	return input, nil
+}
+
+func validateSchedule(sc *scheduledomain.Schedule) error {
+	if sc == nil {
+		return nil
+	}
+
+	if !sc.Type.IsValid() {
+		return fmt.Errorf("%w: invalid schedule type", ErrInvalidInput)
+	}
+
+	switch sc.Type {
+	case scheduledomain.ScheduleTypeDaily:
+		if sc.EveryNDays == nil || *sc.EveryNDays <= 0 {
+			return fmt.Errorf("%w: every_n_days must be greater than 0", ErrInvalidInput)
+		}
+
+	case scheduledomain.ScheduleTypeMonthly:
+		if len(sc.MonthDays) == 0 {
+			return fmt.Errorf("%w: month_days is required", ErrInvalidInput)
+		}
+		for _, d := range sc.MonthDays {
+			if d < 1 || d > 30 {
+				return fmt.Errorf("%w: month_days must be between 1 and 30", ErrInvalidInput)
+			}
+		}
+
+	case scheduledomain.ScheduleTypeSpecificDates:
+		if len(sc.SpecificDates) == 0 {
+			return fmt.Errorf("%w: specific_dates is required", ErrInvalidInput)
+		}
+
+	case scheduledomain.ScheduleTypeParity:
+		if sc.Parity == nil || !sc.Parity.IsValid() {
+			return fmt.Errorf("%w: invalid parity", ErrInvalidInput)
+		}
+	}
+
+	return nil
+}
+
+func (s *Service) GenerateScheduledTasks(ctx context.Context, today time.Time) error {
+	sourceTasks, err := s.tasksRepo.ListSourceTasks(ctx)
+	if err != nil {
+		return err
+	}
+
+	for i := range sourceTasks {
+		sourceTask := &sourceTasks[i]
+
+		schedule, err := s.schedulesRepo.GetByTaskID(ctx, sourceTask.ID)
+		if err != nil {
+			continue
+		}
+		sourceTask.Schedule = schedule
+
+		if !shouldGenerateToday(*sourceTask, today) {
+			continue
+		}
+
+		exists, err := s.tasksRepo.ExistsGeneratedForDate(ctx, sourceTask.ID, today)
+		if err != nil {
+			return err
+		}
+		if exists {
+			continue
+		}
+
+		now := s.now()
+
+		newTask := &taskdomain.Task{
+			Title:        sourceTask.Title,
+			Description:  sourceTask.Description,
+			Status:       taskdomain.StatusNew,
+			SourceTaskID: &sourceTask.ID,
+			CreatedAt:    now,
+			UpdatedAt:    now,
+		}
+
+		if _, err := s.tasksRepo.Create(ctx, newTask); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func shouldGenerateToday(task taskdomain.Task, today time.Time) bool {
+	if task.Schedule == nil {
+		return false
+	}
+
+	switch task.Schedule.Type {
+	case scheduledomain.ScheduleTypeDaily:
+		return shouldGenerateDaily(task, today)
+
+	case scheduledomain.ScheduleTypeMonthly:
+		day := today.Day()
+		for _, d := range task.Schedule.MonthDays {
+			if d == day {
+				return true
+			}
+		}
+		return false
+
+	case scheduledomain.ScheduleTypeSpecificDates:
+		for _, date := range task.Schedule.SpecificDates {
+			if sameDate(date, today) {
+				return true
+			}
+		}
+		return false
+
+	case scheduledomain.ScheduleTypeParity:
+		if task.Schedule.Parity == nil {
+			return false
+		}
+
+		if *task.Schedule.Parity == scheduledomain.DayParityEven {
+			return today.Day()%2 == 0
+		}
+
+		return today.Day()%2 != 0
+	}
+
+	return false
+}
+
+func shouldGenerateDaily(task taskdomain.Task, today time.Time) bool {
+	if task.Schedule == nil || task.Schedule.EveryNDays == nil {
+		return false
+	}
+
+	start := truncateDate(task.CreatedAt)
+	current := truncateDate(today)
+
+	diff := int(current.Sub(start).Hours() / 24)
+	return diff >= 0 && diff%*task.Schedule.EveryNDays == 0
+}
+
+func truncateDate(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+func sameDate(a, b time.Time) bool {
+	a = truncateDate(a)
+	b = truncateDate(b)
+	return a.Equal(b)
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\task\service_test.go
+Размер: 6,694 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	scheduledomain "example.com/taskservice/internal/domain/schedule"
+	taskdomain "example.com/taskservice/internal/domain/task"
+	"example.com/taskservice/internal/usecase/task/mocks"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestService_Create(t *testing.T) {
+	taskRepo := mocks.NewMockTasksRepository(t)
+	scheduleRepo := mocks.NewMockSchedulesRepository(t)
+
+	fixedNow := time.Date(2026, 4, 7, 12, 0, 0, 0, time.UTC)
+
+	svc := &Service{
+		tasksRepo:     taskRepo,
+		schedulesRepo: scheduleRepo,
+		now:           func() time.Time { return fixedNow },
+	}
+
+	input := CreateInput{
+		Title:       "Test task",
+		Description: "Test description",
+		Status:      taskdomain.StatusNew,
+	}
+
+	taskRepo.
+		On("Create", context.Background(), &taskdomain.Task{
+			Title:       "Test task",
+			Description: "Test description",
+			Status:      taskdomain.StatusNew,
+			CreatedAt:   fixedNow,
+			UpdatedAt:   fixedNow,
+		}).
+		Return(&taskdomain.Task{
+			ID:          1,
+			Title:       "Test task",
+			Description: "Test description",
+			Status:      taskdomain.StatusNew,
+			CreatedAt:   fixedNow,
+			UpdatedAt:   fixedNow,
+		}, nil).
+		Once()
+
+	got, err := svc.Create(context.Background(), input)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+
+	assert.Equal(t, int64(1), got.ID)
+	assert.Equal(t, "Test task", got.Title)
+	assert.Nil(t, got.Schedule)
+}
+
+func TestService_GetByID(t *testing.T) {
+	taskRepo := mocks.NewMockTasksRepository(t)
+	scheduleRepo := mocks.NewMockSchedulesRepository(t)
+
+	svc := &Service{
+		tasksRepo:     taskRepo,
+		schedulesRepo: scheduleRepo,
+		now:           func() time.Time { return time.Now().UTC() },
+	}
+
+	taskRepo.
+		On("GetByID", context.Background(), int64(1)).
+		Return(&taskdomain.Task{
+			ID:          1,
+			Title:       "Test",
+			Description: "Desc",
+			Status:      taskdomain.StatusNew,
+		}, nil).
+		Once()
+
+	scheduleRepo.
+		On("GetByTaskID", context.Background(), int64(1)).
+		Return((*scheduledomain.Schedule)(nil), errors.New("not found")).
+		Once()
+
+	got, err := svc.GetByID(context.Background(), 1)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+
+	assert.Equal(t, int64(1), got.ID)
+	assert.Equal(t, "Test", got.Title)
+}
+
+func TestService_Update(t *testing.T) {
+	taskRepo := mocks.NewMockTasksRepository(t)
+	scheduleRepo := mocks.NewMockSchedulesRepository(t)
+
+	fixedNow := time.Date(2026, 4, 7, 13, 0, 0, 0, time.UTC)
+
+	svc := &Service{
+		tasksRepo:     taskRepo,
+		schedulesRepo: scheduleRepo,
+		now:           func() time.Time { return fixedNow },
+	}
+
+	input := UpdateInput{
+		Title:       "Updated title",
+		Description: "Updated desc",
+		Status:      taskdomain.StatusInProgress,
+	}
+
+	taskRepo.
+		On("Update", context.Background(), &taskdomain.Task{
+			ID:          1,
+			Title:       "Updated title",
+			Description: "Updated desc",
+			Status:      taskdomain.StatusInProgress,
+			UpdatedAt:   fixedNow,
+		}).
+		Return(&taskdomain.Task{
+			ID:          1,
+			Title:       "Updated title",
+			Description: "Updated desc",
+			Status:      taskdomain.StatusInProgress,
+			UpdatedAt:   fixedNow,
+		}, nil).
+		Once()
+
+	scheduleRepo.
+		On("DeleteByTaskID", context.Background(), int64(1)).
+		Return(nil).
+		Once()
+
+	got, err := svc.Update(context.Background(), 1, input)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+
+	assert.Equal(t, int64(1), got.ID)
+	assert.Equal(t, taskdomain.StatusInProgress, got.Status)
+}
+
+func TestService_Delete(t *testing.T) {
+	taskRepo := mocks.NewMockTasksRepository(t)
+	scheduleRepo := mocks.NewMockSchedulesRepository(t)
+
+	svc := &Service{
+		tasksRepo:     taskRepo,
+		schedulesRepo: scheduleRepo,
+		now:           func() time.Time { return time.Now().UTC() },
+	}
+
+	taskRepo.
+		On("Delete", context.Background(), int64(1)).
+		Return(nil).
+		Once()
+
+	err := svc.Delete(context.Background(), 1)
+	require.NoError(t, err)
+}
+
+func TestService_List(t *testing.T) {
+	taskRepo := mocks.NewMockTasksRepository(t)
+	scheduleRepo := mocks.NewMockSchedulesRepository(t)
+
+	svc := &Service{
+		tasksRepo:     taskRepo,
+		schedulesRepo: scheduleRepo,
+		now:           func() time.Time { return time.Now().UTC() },
+	}
+
+	tasks := []taskdomain.Task{
+		{
+			ID:          1,
+			Title:       "Task 1",
+			Description: "Desc 1",
+			Status:      taskdomain.StatusNew,
+		},
+		{
+			ID:          2,
+			Title:       "Task 2",
+			Description: "Desc 2",
+			Status:      taskdomain.StatusDone,
+		},
+	}
+
+	taskRepo.
+		On("List", context.Background()).
+		Return(tasks, nil).
+		Once()
+
+	scheduleRepo.
+		On("GetByTaskID", context.Background(), int64(1)).
+		Return((*scheduledomain.Schedule)(nil), errors.New("not found")).
+		Once()
+
+	scheduleRepo.
+		On("GetByTaskID", context.Background(), int64(2)).
+		Return((*scheduledomain.Schedule)(nil), errors.New("not found")).
+		Once()
+
+	got, err := svc.List(context.Background())
+	require.NoError(t, err)
+
+	require.Len(t, got, 2)
+	assert.Equal(t, int64(1), got[0].ID)
+	assert.Equal(t, int64(2), got[1].ID)
+}
+
+func TestService_GenerateScheduledTasks_CreateTask(t *testing.T) {
+	ctx := context.Background()
+
+	tasksRepo := mocks.NewMockTasksRepository(t)
+	schedulesRepo := mocks.NewMockSchedulesRepository(t)
+
+	fixedNow := time.Date(2026, 4, 7, 12, 0, 0, 0, time.UTC)
+
+	svc := &Service{
+		tasksRepo:     tasksRepo,
+		schedulesRepo: schedulesRepo,
+		now:           func() time.Time { return fixedNow },
+	}
+
+	sourceTask := taskdomain.Task{
+		ID:          1,
+		Title:       "Обзвон",
+		Description: "Описание",
+		Status:      taskdomain.StatusNew,
+		CreatedAt:   fixedNow.AddDate(0, 0, -1), // вчера
+	}
+
+	everyNDays := 1
+
+	schedule := &scheduledomain.Schedule{
+		TaskID:     1,
+		Type:       scheduledomain.ScheduleTypeDaily,
+		EveryNDays: &everyNDays,
+	}
+
+	tasksRepo.
+		On("ListSourceTasks", ctx).
+		Return([]taskdomain.Task{sourceTask}, nil).
+		Once()
+
+	schedulesRepo.
+		On("GetByTaskID", ctx, int64(1)).
+		Return(schedule, nil).
+		Once()
+
+	tasksRepo.
+		On("ExistsGeneratedForDate", ctx, int64(1), fixedNow).
+		Return(false, nil).
+		Once()
+
+	tasksRepo.
+		On("Create", ctx, &taskdomain.Task{
+			Title:        "Обзвон",
+			Description:  "Описание",
+			Status:       taskdomain.StatusNew,
+			SourceTaskID: &sourceTask.ID,
+			CreatedAt:    fixedNow,
+			UpdatedAt:    fixedNow,
+		}).
+		Return(&taskdomain.Task{
+			ID: 2,
+		}, nil).
+		Once()
+
+	err := svc.GenerateScheduledTasks(ctx, fixedNow)
+	require.NoError(t, err)
+}
+
+
+================================================================================
+📁 ПАПКА: identicalaffiliation/internal\usecase\task\mocks/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\task\mocks\mock_SchedulesRepository.go
+Размер: 7,915 байт
+────────────────────────────────────────────────────────────────────────────────
+// Code generated by mockery v2.53.6. DO NOT EDIT.
+
+package mocks
+
+import (
+	context "context"
+
+	schedule "example.com/taskservice/internal/domain/schedule"
+	mock "github.com/stretchr/testify/mock"
+)
+
+// MockSchedulesRepository is an autogenerated mock type for the SchedulesRepository type
+type MockSchedulesRepository struct {
+	mock.Mock
+}
+
+type MockSchedulesRepository_Expecter struct {
+	mock *mock.Mock
+}
+
+func (_m *MockSchedulesRepository) EXPECT() *MockSchedulesRepository_Expecter {
+	return &MockSchedulesRepository_Expecter{mock: &_m.Mock}
+}
+
+// Create provides a mock function with given fields: ctx, _a1
+func (_m *MockSchedulesRepository) Create(ctx context.Context, _a1 *schedule.Schedule) error {
+	ret := _m.Called(ctx, _a1)
+
+	if len(ret) == 0 {
+		panic("no return value specified for Create")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(context.Context, *schedule.Schedule) error); ok {
+		r0 = rf(ctx, _a1)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// MockSchedulesRepository_Create_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Create'
+type MockSchedulesRepository_Create_Call struct {
+	*mock.Call
+}
+
+// Create is a helper method to define mock.On call
+//   - ctx context.Context
+//   - _a1 *schedule.Schedule
+func (_e *MockSchedulesRepository_Expecter) Create(ctx interface{}, _a1 interface{}) *MockSchedulesRepository_Create_Call {
+	return &MockSchedulesRepository_Create_Call{Call: _e.mock.On("Create", ctx, _a1)}
+}
+
+func (_c *MockSchedulesRepository_Create_Call) Run(run func(ctx context.Context, _a1 *schedule.Schedule)) *MockSchedulesRepository_Create_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(context.Context), args[1].(*schedule.Schedule))
+	})
+	return _c
+}
+
+func (_c *MockSchedulesRepository_Create_Call) Return(_a0 error) *MockSchedulesRepository_Create_Call {
+	_c.Call.Return(_a0)
+	return _c
+}
+
+func (_c *MockSchedulesRepository_Create_Call) RunAndReturn(run func(context.Context, *schedule.Schedule) error) *MockSchedulesRepository_Create_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// DeleteByTaskID provides a mock function with given fields: ctx, taskID
+func (_m *MockSchedulesRepository) DeleteByTaskID(ctx context.Context, taskID int64) error {
+	ret := _m.Called(ctx, taskID)
+
+	if len(ret) == 0 {
+		panic("no return value specified for DeleteByTaskID")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(context.Context, int64) error); ok {
+		r0 = rf(ctx, taskID)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// MockSchedulesRepository_DeleteByTaskID_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'DeleteByTaskID'
+type MockSchedulesRepository_DeleteByTaskID_Call struct {
+	*mock.Call
+}
+
+// DeleteByTaskID is a helper method to define mock.On call
+//   - ctx context.Context
+//   - taskID int64
+func (_e *MockSchedulesRepository_Expecter) DeleteByTaskID(ctx interface{}, taskID interface{}) *MockSchedulesRepository_DeleteByTaskID_Call {
+	return &MockSchedulesRepository_DeleteByTaskID_Call{Call: _e.mock.On("DeleteByTaskID", ctx, taskID)}
+}
+
+func (_c *MockSchedulesRepository_DeleteByTaskID_Call) Run(run func(ctx context.Context, taskID int64)) *MockSchedulesRepository_DeleteByTaskID_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(context.Context), args[1].(int64))
+	})
+	return _c
+}
+
+func (_c *MockSchedulesRepository_DeleteByTaskID_Call) Return(_a0 error) *MockSchedulesRepository_DeleteByTaskID_Call {
+	_c.Call.Return(_a0)
+	return _c
+}
+
+func (_c *MockSchedulesRepository_DeleteByTaskID_Call) RunAndReturn(run func(context.Context, int64) error) *MockSchedulesRepository_DeleteByTaskID_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// GetByTaskID provides a mock function with given fields: ctx, taskID
+func (_m *MockSchedulesRepository) GetByTaskID(ctx context.Context, taskID int64) (*schedule.Schedule, error) {
+	ret := _m.Called(ctx, taskID)
+
+	if len(ret) == 0 {
+		panic("no return value specified for GetByTaskID")
+	}
+
+	var r0 *schedule.Schedule
+	var r1 error
+	if rf, ok := ret.Get(0).(func(context.Context, int64) (*schedule.Schedule, error)); ok {
+		return rf(ctx, taskID)
+	}
+	if rf, ok := ret.Get(0).(func(context.Context, int64) *schedule.Schedule); ok {
+		r0 = rf(ctx, taskID)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(*schedule.Schedule)
+		}
+	}
+
+	if rf, ok := ret.Get(1).(func(context.Context, int64) error); ok {
+		r1 = rf(ctx, taskID)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// MockSchedulesRepository_GetByTaskID_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'GetByTaskID'
+type MockSchedulesRepository_GetByTaskID_Call struct {
+	*mock.Call
+}
+
+// GetByTaskID is a helper method to define mock.On call
+//   - ctx context.Context
+//   - taskID int64
+func (_e *MockSchedulesRepository_Expecter) GetByTaskID(ctx interface{}, taskID interface{}) *MockSchedulesRepository_GetByTaskID_Call {
+	return &MockSchedulesRepository_GetByTaskID_Call{Call: _e.mock.On("GetByTaskID", ctx, taskID)}
+}
+
+func (_c *MockSchedulesRepository_GetByTaskID_Call) Run(run func(ctx context.Context, taskID int64)) *MockSchedulesRepository_GetByTaskID_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(context.Context), args[1].(int64))
+	})
+	return _c
+}
+
+func (_c *MockSchedulesRepository_GetByTaskID_Call) Return(_a0 *schedule.Schedule, _a1 error) *MockSchedulesRepository_GetByTaskID_Call {
+	_c.Call.Return(_a0, _a1)
+	return _c
+}
+
+func (_c *MockSchedulesRepository_GetByTaskID_Call) RunAndReturn(run func(context.Context, int64) (*schedule.Schedule, error)) *MockSchedulesRepository_GetByTaskID_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// Upsert provides a mock function with given fields: ctx, _a1
+func (_m *MockSchedulesRepository) Upsert(ctx context.Context, _a1 *schedule.Schedule) error {
+	ret := _m.Called(ctx, _a1)
+
+	if len(ret) == 0 {
+		panic("no return value specified for Upsert")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(context.Context, *schedule.Schedule) error); ok {
+		r0 = rf(ctx, _a1)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// MockSchedulesRepository_Upsert_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Upsert'
+type MockSchedulesRepository_Upsert_Call struct {
+	*mock.Call
+}
+
+// Upsert is a helper method to define mock.On call
+//   - ctx context.Context
+//   - _a1 *schedule.Schedule
+func (_e *MockSchedulesRepository_Expecter) Upsert(ctx interface{}, _a1 interface{}) *MockSchedulesRepository_Upsert_Call {
+	return &MockSchedulesRepository_Upsert_Call{Call: _e.mock.On("Upsert", ctx, _a1)}
+}
+
+func (_c *MockSchedulesRepository_Upsert_Call) Run(run func(ctx context.Context, _a1 *schedule.Schedule)) *MockSchedulesRepository_Upsert_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(context.Context), args[1].(*schedule.Schedule))
+	})
+	return _c
+}
+
+func (_c *MockSchedulesRepository_Upsert_Call) Return(_a0 error) *MockSchedulesRepository_Upsert_Call {
+	_c.Call.Return(_a0)
+	return _c
+}
+
+func (_c *MockSchedulesRepository_Upsert_Call) RunAndReturn(run func(context.Context, *schedule.Schedule) error) *MockSchedulesRepository_Upsert_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// NewMockSchedulesRepository creates a new instance of MockSchedulesRepository. It also registers a testing interface on the mock and a cleanup function to assert the mocks expectations.
+// The first argument is typically a *testing.T value.
+func NewMockSchedulesRepository(t interface {
+	mock.TestingT
+	Cleanup(func())
+}) *MockSchedulesRepository {
+	mock := &MockSchedulesRepository{}
+	mock.Mock.Test(t)
+
+	t.Cleanup(func() { mock.AssertExpectations(t) })
+
+	return mock
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\task\mocks\mock_TasksRepository.go
+Размер: 13,763 байт
+────────────────────────────────────────────────────────────────────────────────
+// Code generated by mockery v2.53.6. DO NOT EDIT.
+
+package mocks
+
+import (
+	context "context"
+
+	task "example.com/taskservice/internal/domain/task"
+	mock "github.com/stretchr/testify/mock"
+
+	time "time"
+)
+
+// MockTasksRepository is an autogenerated mock type for the TasksRepository type
+type MockTasksRepository struct {
+	mock.Mock
+}
+
+type MockTasksRepository_Expecter struct {
+	mock *mock.Mock
+}
+
+func (_m *MockTasksRepository) EXPECT() *MockTasksRepository_Expecter {
+	return &MockTasksRepository_Expecter{mock: &_m.Mock}
+}
+
+// Create provides a mock function with given fields: ctx, _a1
+func (_m *MockTasksRepository) Create(ctx context.Context, _a1 *task.Task) (*task.Task, error) {
+	ret := _m.Called(ctx, _a1)
+
+	if len(ret) == 0 {
+		panic("no return value specified for Create")
+	}
+
+	var r0 *task.Task
+	var r1 error
+	if rf, ok := ret.Get(0).(func(context.Context, *task.Task) (*task.Task, error)); ok {
+		return rf(ctx, _a1)
+	}
+	if rf, ok := ret.Get(0).(func(context.Context, *task.Task) *task.Task); ok {
+		r0 = rf(ctx, _a1)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(*task.Task)
+		}
+	}
+
+	if rf, ok := ret.Get(1).(func(context.Context, *task.Task) error); ok {
+		r1 = rf(ctx, _a1)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// MockTasksRepository_Create_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Create'
+type MockTasksRepository_Create_Call struct {
+	*mock.Call
+}
+
+// Create is a helper method to define mock.On call
+//   - ctx context.Context
+//   - _a1 *task.Task
+func (_e *MockTasksRepository_Expecter) Create(ctx interface{}, _a1 interface{}) *MockTasksRepository_Create_Call {
+	return &MockTasksRepository_Create_Call{Call: _e.mock.On("Create", ctx, _a1)}
+}
+
+func (_c *MockTasksRepository_Create_Call) Run(run func(ctx context.Context, _a1 *task.Task)) *MockTasksRepository_Create_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(context.Context), args[1].(*task.Task))
+	})
+	return _c
+}
+
+func (_c *MockTasksRepository_Create_Call) Return(_a0 *task.Task, _a1 error) *MockTasksRepository_Create_Call {
+	_c.Call.Return(_a0, _a1)
+	return _c
+}
+
+func (_c *MockTasksRepository_Create_Call) RunAndReturn(run func(context.Context, *task.Task) (*task.Task, error)) *MockTasksRepository_Create_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// Delete provides a mock function with given fields: ctx, id
+func (_m *MockTasksRepository) Delete(ctx context.Context, id int64) error {
+	ret := _m.Called(ctx, id)
+
+	if len(ret) == 0 {
+		panic("no return value specified for Delete")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(context.Context, int64) error); ok {
+		r0 = rf(ctx, id)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// MockTasksRepository_Delete_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Delete'
+type MockTasksRepository_Delete_Call struct {
+	*mock.Call
+}
+
+// Delete is a helper method to define mock.On call
+//   - ctx context.Context
+//   - id int64
+func (_e *MockTasksRepository_Expecter) Delete(ctx interface{}, id interface{}) *MockTasksRepository_Delete_Call {
+	return &MockTasksRepository_Delete_Call{Call: _e.mock.On("Delete", ctx, id)}
+}
+
+func (_c *MockTasksRepository_Delete_Call) Run(run func(ctx context.Context, id int64)) *MockTasksRepository_Delete_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(context.Context), args[1].(int64))
+	})
+	return _c
+}
+
+func (_c *MockTasksRepository_Delete_Call) Return(_a0 error) *MockTasksRepository_Delete_Call {
+	_c.Call.Return(_a0)
+	return _c
+}
+
+func (_c *MockTasksRepository_Delete_Call) RunAndReturn(run func(context.Context, int64) error) *MockTasksRepository_Delete_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// ExistsGeneratedForDate provides a mock function with given fields: ctx, sourceTaskID, date
+func (_m *MockTasksRepository) ExistsGeneratedForDate(ctx context.Context, sourceTaskID int64, date time.Time) (bool, error) {
+	ret := _m.Called(ctx, sourceTaskID, date)
+
+	if len(ret) == 0 {
+		panic("no return value specified for ExistsGeneratedForDate")
+	}
+
+	var r0 bool
+	var r1 error
+	if rf, ok := ret.Get(0).(func(context.Context, int64, time.Time) (bool, error)); ok {
+		return rf(ctx, sourceTaskID, date)
+	}
+	if rf, ok := ret.Get(0).(func(context.Context, int64, time.Time) bool); ok {
+		r0 = rf(ctx, sourceTaskID, date)
+	} else {
+		r0 = ret.Get(0).(bool)
+	}
+
+	if rf, ok := ret.Get(1).(func(context.Context, int64, time.Time) error); ok {
+		r1 = rf(ctx, sourceTaskID, date)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// MockTasksRepository_ExistsGeneratedForDate_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'ExistsGeneratedForDate'
+type MockTasksRepository_ExistsGeneratedForDate_Call struct {
+	*mock.Call
+}
+
+// ExistsGeneratedForDate is a helper method to define mock.On call
+//   - ctx context.Context
+//   - sourceTaskID int64
+//   - date time.Time
+func (_e *MockTasksRepository_Expecter) ExistsGeneratedForDate(ctx interface{}, sourceTaskID interface{}, date interface{}) *MockTasksRepository_ExistsGeneratedForDate_Call {
+	return &MockTasksRepository_ExistsGeneratedForDate_Call{Call: _e.mock.On("ExistsGeneratedForDate", ctx, sourceTaskID, date)}
+}
+
+func (_c *MockTasksRepository_ExistsGeneratedForDate_Call) Run(run func(ctx context.Context, sourceTaskID int64, date time.Time)) *MockTasksRepository_ExistsGeneratedForDate_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(context.Context), args[1].(int64), args[2].(time.Time))
+	})
+	return _c
+}
+
+func (_c *MockTasksRepository_ExistsGeneratedForDate_Call) Return(_a0 bool, _a1 error) *MockTasksRepository_ExistsGeneratedForDate_Call {
+	_c.Call.Return(_a0, _a1)
+	return _c
+}
+
+func (_c *MockTasksRepository_ExistsGeneratedForDate_Call) RunAndReturn(run func(context.Context, int64, time.Time) (bool, error)) *MockTasksRepository_ExistsGeneratedForDate_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// GetByID provides a mock function with given fields: ctx, id
+func (_m *MockTasksRepository) GetByID(ctx context.Context, id int64) (*task.Task, error) {
+	ret := _m.Called(ctx, id)
+
+	if len(ret) == 0 {
+		panic("no return value specified for GetByID")
+	}
+
+	var r0 *task.Task
+	var r1 error
+	if rf, ok := ret.Get(0).(func(context.Context, int64) (*task.Task, error)); ok {
+		return rf(ctx, id)
+	}
+	if rf, ok := ret.Get(0).(func(context.Context, int64) *task.Task); ok {
+		r0 = rf(ctx, id)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(*task.Task)
+		}
+	}
+
+	if rf, ok := ret.Get(1).(func(context.Context, int64) error); ok {
+		r1 = rf(ctx, id)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// MockTasksRepository_GetByID_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'GetByID'
+type MockTasksRepository_GetByID_Call struct {
+	*mock.Call
+}
+
+// GetByID is a helper method to define mock.On call
+//   - ctx context.Context
+//   - id int64
+func (_e *MockTasksRepository_Expecter) GetByID(ctx interface{}, id interface{}) *MockTasksRepository_GetByID_Call {
+	return &MockTasksRepository_GetByID_Call{Call: _e.mock.On("GetByID", ctx, id)}
+}
+
+func (_c *MockTasksRepository_GetByID_Call) Run(run func(ctx context.Context, id int64)) *MockTasksRepository_GetByID_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(context.Context), args[1].(int64))
+	})
+	return _c
+}
+
+func (_c *MockTasksRepository_GetByID_Call) Return(_a0 *task.Task, _a1 error) *MockTasksRepository_GetByID_Call {
+	_c.Call.Return(_a0, _a1)
+	return _c
+}
+
+func (_c *MockTasksRepository_GetByID_Call) RunAndReturn(run func(context.Context, int64) (*task.Task, error)) *MockTasksRepository_GetByID_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// List provides a mock function with given fields: ctx
+func (_m *MockTasksRepository) List(ctx context.Context) ([]task.Task, error) {
+	ret := _m.Called(ctx)
+
+	if len(ret) == 0 {
+		panic("no return value specified for List")
+	}
+
+	var r0 []task.Task
+	var r1 error
+	if rf, ok := ret.Get(0).(func(context.Context) ([]task.Task, error)); ok {
+		return rf(ctx)
+	}
+	if rf, ok := ret.Get(0).(func(context.Context) []task.Task); ok {
+		r0 = rf(ctx)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).([]task.Task)
+		}
+	}
+
+	if rf, ok := ret.Get(1).(func(context.Context) error); ok {
+		r1 = rf(ctx)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// MockTasksRepository_List_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'List'
+type MockTasksRepository_List_Call struct {
+	*mock.Call
+}
+
+// List is a helper method to define mock.On call
+//   - ctx context.Context
+func (_e *MockTasksRepository_Expecter) List(ctx interface{}) *MockTasksRepository_List_Call {
+	return &MockTasksRepository_List_Call{Call: _e.mock.On("List", ctx)}
+}
+
+func (_c *MockTasksRepository_List_Call) Run(run func(ctx context.Context)) *MockTasksRepository_List_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(context.Context))
+	})
+	return _c
+}
+
+func (_c *MockTasksRepository_List_Call) Return(_a0 []task.Task, _a1 error) *MockTasksRepository_List_Call {
+	_c.Call.Return(_a0, _a1)
+	return _c
+}
+
+func (_c *MockTasksRepository_List_Call) RunAndReturn(run func(context.Context) ([]task.Task, error)) *MockTasksRepository_List_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// ListSourceTasks provides a mock function with given fields: ctx
+func (_m *MockTasksRepository) ListSourceTasks(ctx context.Context) ([]task.Task, error) {
+	ret := _m.Called(ctx)
+
+	if len(ret) == 0 {
+		panic("no return value specified for ListSourceTasks")
+	}
+
+	var r0 []task.Task
+	var r1 error
+	if rf, ok := ret.Get(0).(func(context.Context) ([]task.Task, error)); ok {
+		return rf(ctx)
+	}
+	if rf, ok := ret.Get(0).(func(context.Context) []task.Task); ok {
+		r0 = rf(ctx)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).([]task.Task)
+		}
+	}
+
+	if rf, ok := ret.Get(1).(func(context.Context) error); ok {
+		r1 = rf(ctx)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// MockTasksRepository_ListSourceTasks_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'ListSourceTasks'
+type MockTasksRepository_ListSourceTasks_Call struct {
+	*mock.Call
+}
+
+// ListSourceTasks is a helper method to define mock.On call
+//   - ctx context.Context
+func (_e *MockTasksRepository_Expecter) ListSourceTasks(ctx interface{}) *MockTasksRepository_ListSourceTasks_Call {
+	return &MockTasksRepository_ListSourceTasks_Call{Call: _e.mock.On("ListSourceTasks", ctx)}
+}
+
+func (_c *MockTasksRepository_ListSourceTasks_Call) Run(run func(ctx context.Context)) *MockTasksRepository_ListSourceTasks_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(context.Context))
+	})
+	return _c
+}
+
+func (_c *MockTasksRepository_ListSourceTasks_Call) Return(_a0 []task.Task, _a1 error) *MockTasksRepository_ListSourceTasks_Call {
+	_c.Call.Return(_a0, _a1)
+	return _c
+}
+
+func (_c *MockTasksRepository_ListSourceTasks_Call) RunAndReturn(run func(context.Context) ([]task.Task, error)) *MockTasksRepository_ListSourceTasks_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// Update provides a mock function with given fields: ctx, _a1
+func (_m *MockTasksRepository) Update(ctx context.Context, _a1 *task.Task) (*task.Task, error) {
+	ret := _m.Called(ctx, _a1)
+
+	if len(ret) == 0 {
+		panic("no return value specified for Update")
+	}
+
+	var r0 *task.Task
+	var r1 error
+	if rf, ok := ret.Get(0).(func(context.Context, *task.Task) (*task.Task, error)); ok {
+		return rf(ctx, _a1)
+	}
+	if rf, ok := ret.Get(0).(func(context.Context, *task.Task) *task.Task); ok {
+		r0 = rf(ctx, _a1)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(*task.Task)
+		}
+	}
+
+	if rf, ok := ret.Get(1).(func(context.Context, *task.Task) error); ok {
+		r1 = rf(ctx, _a1)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// MockTasksRepository_Update_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Update'
+type MockTasksRepository_Update_Call struct {
+	*mock.Call
+}
+
+// Update is a helper method to define mock.On call
+//   - ctx context.Context
+//   - _a1 *task.Task
+func (_e *MockTasksRepository_Expecter) Update(ctx interface{}, _a1 interface{}) *MockTasksRepository_Update_Call {
+	return &MockTasksRepository_Update_Call{Call: _e.mock.On("Update", ctx, _a1)}
+}
+
+func (_c *MockTasksRepository_Update_Call) Run(run func(ctx context.Context, _a1 *task.Task)) *MockTasksRepository_Update_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(context.Context), args[1].(*task.Task))
+	})
+	return _c
+}
+
+func (_c *MockTasksRepository_Update_Call) Return(_a0 *task.Task, _a1 error) *MockTasksRepository_Update_Call {
+	_c.Call.Return(_a0, _a1)
+	return _c
+}
+
+func (_c *MockTasksRepository_Update_Call) RunAndReturn(run func(context.Context, *task.Task) (*task.Task, error)) *MockTasksRepository_Update_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// NewMockTasksRepository creates a new instance of MockTasksRepository. It also registers a testing interface on the mock and a cleanup function to assert the mocks expectations.
+// The first argument is typically a *testing.T value.
+func NewMockTasksRepository(t interface {
+	mock.TestingT
+	Cleanup(func())
+}) *MockTasksRepository {
+	mock := &MockTasksRepository{}
+	mock.Mock.Test(t)
+
+	t.Cleanup(func() { mock.AssertExpectations(t) })
+
+	return mock
+}
+
+
+================================================================================
+📁 ПАПКА: identicalaffiliation/migrations/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: migrations\0001_create_tasks.up.sql
+Размер: 318 байт
+────────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS tasks (
+	id BIGSERIAL PRIMARY KEY,
+	title TEXT NOT NULL,
+	description TEXT NOT NULL DEFAULT '',
+	status TEXT NOT NULL,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks (status);
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: migrations\0002_add_source_task_id_to_tasks.up.sql
+Размер: 164 байт
+────────────────────────────────────────────────────────────────────────────────
+ALTER TABLE tasks
+ADD COLUMN source_task_id BIGINT NULL REFERENCES tasks(id) ON DELETE SET NULL;
+
+CREATE INDEX idx_tasks_source_task_id ON tasks(source_task_id);
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: migrations\0003_create_schedules.up.sql
+Размер: 447 байт
+────────────────────────────────────────────────────────────────────────────────
+CREATE TABLE schedules (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  task_id BIGINT NOT NULL UNIQUE REFERENCES tasks(id) ON DELETE CASCADE,
+  type SMALLINT NOT NULL,
+  every_n_days INT NULL,
+  month_days INT[] NULL,
+  specific_dates DATE[] NULL,
+  parity SMALLINT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_schedules_task_id ON schedules(task_id);
+
+================================================================================
+СТАТИСТИКА ЭКСПОРТА
+================================================================================
+Всего обработано файлов: 32
+Всего пропущено файлов: 3
+Общий размер выходного файла: 110,224 байт

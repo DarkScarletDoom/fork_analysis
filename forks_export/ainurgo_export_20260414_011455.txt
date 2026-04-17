@@ -1,0 +1,4239 @@
+================================================================================
+ЭКСПОРТ РЕПОЗИТОРИЯ: ainurgo
+Путь: C:\Users\vladk\Desktop\test\forks\ainurgo
+Дата экспорта: 2026-04-14 01:14:55
+================================================================================
+
+
+================================================================================
+📁 ПАПКА: ainurgo/
+================================================================================
+
+[ПРОПУЩЕН] .dockerignore (бинарный/служебный/слишком большой)
+
+[ПРОПУЩЕН] .gitignore (бинарный/служебный/слишком большой)
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: Dockerfile
+Размер: 414 байт
+────────────────────────────────────────────────────────────────────────────────
+FROM golang:1.23.0-alpine AS builder
+
+WORKDIR /src
+
+RUN apk add --no-cache ca-certificates
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/taskservice ./cmd/api
+
+FROM alpine:3.21
+
+WORKDIR /app
+
+RUN apk add --no-cache ca-certificates
+
+COPY --from=builder /out/taskservice /app/taskservice
+
+EXPOSE 8080
+
+CMD ["/app/taskservice"]
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: README.md
+Размер: 5,795 байт
+────────────────────────────────────────────────────────────────────────────────
+# Task Service
+
+Сервис для управления задачами с HTTP API на Go.
+
+Исходный проект был расширен: кроме базового CRUD для задач добавлены повторяемые задачи, сотрудники, дедлайны, отчёты по завершению, admin/employee demo UI и demo-данные для быстрого показа.
+
+## Требования
+
+- Go `1.23+`
+- PostgreSQL
+  
+## Что было сделано
+
+### 1. Периодические задачи
+Добавлена поддержка шаблонов повторяемости и автоматической генерации реальных задач по расписанию.
+
+Поддерживаются типы повторения:
+- без повторения
+- сегодня
+- только в определенные дни
+- раз в N дней
+- ежемесячно
+- четные или нечетные дни месяца
+
+Для периодических задач добавлены:
+- `kind: template | task`
+- `template_id`
+- `scheduled_for`
+- `recurrence`
+- `time_of_day`
+- окно генерации вперед
+- статус расписания
+
+### 2. Дедлайны и срок выполнения
+Добавлено поле `scheduled_at` с датой и временем выполнения задачи.
+
+Используется:
+- для разовых задач
+- как базовая дата/время для повторяемых задач
+- для сортировки задач по ближайшему сроку
+
+### 3. Сотрудники и назначение задач
+Добавлена возможность назначения задач на сотрудников.
+
+Задачу можно:
+- назначить конкретному сотруднику
+- оставить без исполнителя, чтобы её мог взять любой сотрудник
+
+### 4. Расширенная логика статусов
+Поддерживаются статусы:
+- `new`
+- `assigned`
+- `in_progress`
+- `done`
+
+Бизнес-правила:
+- если задача назначена сотруднику, она отображается как `assigned`
+- сотрудник может взять задачу в работу
+- сотрудник может вернуть задачу обратно в общий пул
+- перед завершением нужен отчет
+
+### 5. Завершение через отчет
+Перед переводом задачи в `done` сотрудник обязан заполнить `completion_report`.
+
+Ограничение:
+- минимум 5 символов
+
+### 6. Подтверждение администратором
+Добавлено поле `admin_verified`.
+
+В админке реализованы категории:
+- новые / назначенные
+- в работе
+- не подтвержденные админом
+- завершенные
+
+При этом завершенными считаются только задачи:
+- `status = done`
+- `admin_verified = true`
+
+### 7. Admin demo UI
+Добавлена локальная demo-страница администратора:
+- создание задач
+- выбор исполнителя
+- выбор срока выполнения
+- настройка повторяемости
+- фильтрация по статусам
+- редактирование задач
+- подтверждение отчетов
+- сортировка по ближайшим задачам
+
+### 8. Employee demo UI
+Добавлена отдельная demo-страница сотрудника:
+- выбор сотрудника
+- просмотр своих и свободных задач
+- взять задачу в работу
+- завершить задачу с отчетом
+- вернуть задачу в общий пул
+
+Задачи сотрудника сгруппированы по блокам:
+- в работе
+- новые
+- завершенные
+
+Demo-сотрудники:
+- Кевин
+- Джо
+- Ной
+
+### 9. API и Swagger
+Обновлены DTO, handlers, router и OpenAPI-спецификация.
+
+Добавлено:
+- расширенное представление задачи
+- `GET /api/v1/employees`
+- новые поля в запросах и ответах задач
+
+### 10. Изменения в БД
+Расширена таблица `tasks`, добавлены миграции для:
+- повторяемости
+- сотрудников и назначений
+- demo seed
+- `scheduled_at`
+
+### 11. Demo seed
+Добавлен SQL-скрипт:
+- `scripts/reset_demo_data.sql`
+
+Он восстанавливает demo-базу в воспроизводимое состояние.
+
+## Переменные окружения
+
+```powershell
+$env:DATABASE_DSN='postgres://postgres:postgres@localhost:5432/taskservice?sslmode=disable'
+$env:HTTP_ADDR=':8080'
+```
+
+## Запуск проекта
+
+```powershell
+go run .\cmd\api
+```
+
+## Доступные URL
+
+- Swagger: [http://localhost:8080/swagger/](http://localhost:8080/swagger/)
+- Admin demo: [http://localhost:8080/demo/](http://localhost:8080/demo/)
+- Employee demo: [http://localhost:8080/employee-demo/](http://localhost:8080/employee-demo/)
+
+## Основные маршруты API
+
+- `GET /api/v1/employees`
+- `POST /api/v1/tasks`
+- `GET /api/v1/tasks`
+- `GET /api/v1/tasks/{id}`
+- `PUT /api/v1/tasks/{id}`
+- `DELETE /api/v1/tasks/{id}`
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: docker-compose.yml
+Размер: 846 байт
+────────────────────────────────────────────────────────────────────────────────
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: taskservice
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d taskservice"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations/0001_create_tasks.up.sql:/docker-entrypoint-initdb.d/001_create_tasks.sql:ro
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      HTTP_ADDR: :8080
+      DATABASE_DSN: postgres://postgres:postgres@postgres:5432/taskservice?sslmode=disable
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: go.mod
+Размер: 441 байт
+────────────────────────────────────────────────────────────────────────────────
+module example.com/taskservice
+
+go 1.23.0
+
+require (
+	github.com/gorilla/mux v1.8.1
+	github.com/jackc/pgx/v5 v5.7.6
+)
+
+require (
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
+	golang.org/x/crypto v0.37.0 // indirect
+	golang.org/x/sync v0.13.0 // indirect
+	golang.org/x/text v0.24.0 // indirect
+)
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: go.sum
+Размер: 2,649 байт
+────────────────────────────────────────────────────────────────────────────────
+github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
+github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/gorilla/mux v1.8.1 h1:TuBL49tXwgrFYWhqrNgrUNEY92u81SPhu7sTdzQEiWY=
+github.com/gorilla/mux v1.8.1/go.mod h1:AKf9I4AEqPTmMytcMc0KkNouC66V3BtZ4qD5fmWSiMQ=
+github.com/jackc/pgpassfile v1.0.0 h1:/6Hmqy13Ss2zCq62VdNG8tM1wchn8zjSGOBJ6icpsIM=
+github.com/jackc/pgpassfile v1.0.0/go.mod h1:CEx0iS5ambNFdcRtxPj5JhEz+xB6uRky5eyVu/W2HEg=
+github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 h1:iCEnooe7UlwOQYpKFhBabPMi4aNAfoODPEFNiAnClxo=
+github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761/go.mod h1:5TJZWKEWniPve33vlWYSoGYefn3gLQRzjfDlhSJ9ZKM=
+github.com/jackc/pgx/v5 v5.7.6 h1:rWQc5FwZSPX58r1OQmkuaNicxdmExaEz5A2DO2hUuTk=
+github.com/jackc/pgx/v5 v5.7.6/go.mod h1:aruU7o91Tc2q2cFp5h4uP3f6ztExVpyVv88Xl/8Vl8M=
+github.com/jackc/puddle/v2 v2.2.2 h1:PR8nw+E/1w0GLuRFSmiioY6UooMp6KJv0/61nB7icHo=
+github.com/jackc/puddle/v2 v2.2.2/go.mod h1:vriiEXHvEE654aYKXXjOvZM39qJ0q+azkZFrfEOc3H4=
+github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
+github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
+github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
+github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UVUgZn+9EI=
+github.com/stretchr/testify v1.7.0/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
+github.com/stretchr/testify v1.8.1 h1:w7B6lhMri9wdJUVmEZPGGhZzrYTPvgJArz7wNPgYKsk=
+github.com/stretchr/testify v1.8.1/go.mod h1:w2LPCIKwWwSfY2zedu0+kehJoqGctiVI29o6fzry7u4=
+golang.org/x/crypto v0.37.0 h1:kJNSjF/Xp7kU0iB2Z+9viTPMW4EqqsrywMXLJOOsXSE=
+golang.org/x/crypto v0.37.0/go.mod h1:vg+k43peMZ0pUMhYmVAWysMK35e6ioLh3wB8ZCAfbVc=
+golang.org/x/sync v0.13.0 h1:AauUjRAJ9OSnvULf/ARrrVywoJDy0YS2AwQ98I37610=
+golang.org/x/sync v0.13.0/go.mod h1:1dzgHSNfp02xaA81J2MS99Qcpr2w7fw1gpm99rleRqA=
+golang.org/x/text v0.24.0 h1:dd5Bzh4yt5KYA8f9CJHCP4FB4D51c2c6JvN37xJJkJ0=
+golang.org/x/text v0.24.0/go.mod h1:L8rBsPeo2pSS+xqN0d5u2ikmjtmoJbDBT1b7nHvFCdU=
+gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
+gopkg.in/yaml.v3 v3.0.0-20200313102051-9f266ea9e77c/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
+gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+
+
+================================================================================
+📁 ПАПКА: ainurgo/cmd/
+================================================================================
+
+================================================================================
+📁 ПАПКА: ainurgo/cmd\api/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: cmd\api\main.go
+Размер: 2,348 байт
+────────────────────────────────────────────────────────────────────────────────
+package main
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	infrastructurepostgres "example.com/taskservice/internal/infrastructure/postgres"
+	postgresrepo "example.com/taskservice/internal/repository/postgres"
+	transporthttp "example.com/taskservice/internal/transport/http"
+	swaggerdocs "example.com/taskservice/internal/transport/http/docs"
+	httphandlers "example.com/taskservice/internal/transport/http/handlers"
+	"example.com/taskservice/internal/usecase/task"
+)
+
+func main() {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
+
+	cfg := loadConfig()
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	pool, err := infrastructurepostgres.Open(ctx, cfg.DatabaseDSN)
+	if err != nil {
+		logger.Error("open postgres", "error", err)
+		os.Exit(1)
+	}
+	defer pool.Close()
+
+	taskRepo := postgresrepo.New(pool)
+	taskUsecase := task.NewService(taskRepo)
+	taskHandler := httphandlers.NewTaskHandler(taskUsecase)
+	docsHandler := swaggerdocs.NewHandler()
+	router := transporthttp.NewRouter(taskHandler, docsHandler)
+
+	server := &http.Server{
+		Addr:              cfg.HTTPAddr,
+		Handler:           router,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	go func() {
+		<-ctx.Done()
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			logger.Error("shutdown http server", "error", err)
+		}
+	}()
+
+	logger.Info("http server started", "addr", cfg.HTTPAddr)
+
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		logger.Error("listen and serve", "error", err)
+		os.Exit(1)
+	}
+}
+
+type config struct {
+	HTTPAddr    string
+	DatabaseDSN string
+}
+
+func loadConfig() config {
+	cfg := config{
+		HTTPAddr:    envOrDefault("HTTP_ADDR", ":8080"),
+		DatabaseDSN: envOrDefault("DATABASE_DSN", "postgres://postgres:postgres@localhost:5432/taskservice?sslmode=disable"),
+	}
+
+	if cfg.DatabaseDSN == "" {
+		panic(fmt.Errorf("DATABASE_DSN is required"))
+	}
+
+	return cfg
+}
+
+func envOrDefault(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+
+	return fallback
+}
+
+
+================================================================================
+📁 ПАПКА: ainurgo/internal/
+================================================================================
+
+================================================================================
+📁 ПАПКА: ainurgo/internal\domain/
+================================================================================
+
+================================================================================
+📁 ПАПКА: ainurgo/internal\domain\employee/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\domain\employee\employee.go
+Размер: 101 байт
+────────────────────────────────────────────────────────────────────────────────
+package employee
+
+type Employee struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+}
+
+
+================================================================================
+📁 ПАПКА: ainurgo/internal\domain\task/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\domain\task\errors.go
+Размер: 83 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import "errors"
+
+var ErrNotFound = errors.New("task not found")
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\domain\task\task.go
+Размер: 3,277 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import "time"
+
+type Status string
+type Kind string
+type RecurrenceType string
+type ScheduleStatus string
+type GenerationWindowUnit string
+
+const (
+	StatusNew        Status = "new"
+	StatusAssigned   Status = "assigned"
+	StatusInProgress Status = "in_progress"
+	StatusDone       Status = "done"
+
+	KindTask     Kind = "task"
+	KindTemplate Kind = "template"
+
+	RecurrenceDaily         RecurrenceType = "daily"
+	RecurrenceMonthly       RecurrenceType = "monthly"
+	RecurrenceSpecificDates RecurrenceType = "specific_dates"
+	RecurrenceOddDays       RecurrenceType = "odd_days"
+	RecurrenceEvenDays      RecurrenceType = "even_days"
+
+	ScheduleStatusActive   ScheduleStatus = "active"
+	ScheduleStatusPaused   ScheduleStatus = "paused"
+	ScheduleStatusFinished ScheduleStatus = "finished"
+
+	GenerationWindowDays   GenerationWindowUnit = "days"
+	GenerationWindowMonths GenerationWindowUnit = "months"
+)
+
+type Task struct {
+	ID               int64       `json:"id"`
+	Title            string      `json:"title"`
+	Description      string      `json:"description"`
+	Status           Status      `json:"status"`
+	Kind             Kind        `json:"kind"`
+	TemplateID       *int64      `json:"template_id,omitempty"`
+	ScheduledFor     *time.Time  `json:"scheduled_for,omitempty"`
+	ScheduledAt      *time.Time  `json:"scheduled_at,omitempty"`
+	AssigneeID       *int64      `json:"assignee_id,omitempty"`
+	AssigneeName     string      `json:"assignee_name,omitempty"`
+	CompletionReport string      `json:"completion_report,omitempty"`
+	AdminVerified    bool        `json:"admin_verified"`
+	Recurrence       *Recurrence `json:"recurrence,omitempty"`
+	CreatedAt        time.Time   `json:"created_at"`
+	UpdatedAt        time.Time   `json:"updated_at"`
+}
+
+type Recurrence struct {
+	Type                  RecurrenceType       `json:"type"`
+	EveryNDays            int                  `json:"every_n_days,omitempty"`
+	DayOfMonth            int                  `json:"day_of_month,omitempty"`
+	Dates                 []time.Time          `json:"dates,omitempty"`
+	TimeOfDay             string               `json:"time_of_day,omitempty"`
+	ScheduleStatus        ScheduleStatus       `json:"schedule_status,omitempty"`
+	GenerationWindowUnit  GenerationWindowUnit `json:"generation_window_unit,omitempty"`
+	GenerationWindowValue int                  `json:"generation_window_value,omitempty"`
+}
+
+func (s Status) Valid() bool {
+	switch s {
+	case StatusNew, StatusAssigned, StatusInProgress, StatusDone:
+		return true
+	default:
+		return false
+	}
+}
+
+func (k Kind) Valid() bool {
+	switch k {
+	case KindTask, KindTemplate:
+		return true
+	default:
+		return false
+	}
+}
+
+func (r RecurrenceType) Valid() bool {
+	switch r {
+	case RecurrenceDaily, RecurrenceMonthly, RecurrenceSpecificDates, RecurrenceOddDays, RecurrenceEvenDays:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s ScheduleStatus) Valid() bool {
+	switch s {
+	case ScheduleStatusActive, ScheduleStatusPaused, ScheduleStatusFinished:
+		return true
+	default:
+		return false
+	}
+}
+
+func (u GenerationWindowUnit) Valid() bool {
+	switch u {
+	case GenerationWindowDays, GenerationWindowMonths:
+		return true
+	default:
+		return false
+	}
+}
+
+
+================================================================================
+📁 ПАПКА: ainurgo/internal\infrastructure/
+================================================================================
+
+================================================================================
+📁 ПАПКА: ainurgo/internal\infrastructure\postgres/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\infrastructure\postgres\pool.go
+Размер: 512 байт
+────────────────────────────────────────────────────────────────────────────────
+package postgres
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+func Open(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
+	if dsn == "" {
+		return nil, fmt.Errorf("database dsn is empty")
+	}
+
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, err
+	}
+
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, err
+	}
+
+	return pool, nil
+}
+
+
+================================================================================
+📁 ПАПКА: ainurgo/internal\repository/
+================================================================================
+
+================================================================================
+📁 ПАПКА: ainurgo/internal\repository\postgres/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\repository\postgres\task_repository.go
+Размер: 12,608 байт
+────────────────────────────────────────────────────────────────────────────────
+package postgres
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	employeedomain "example.com/taskservice/internal/domain/employee"
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type Repository struct {
+	pool *pgxpool.Pool
+}
+
+type recurrencePayload struct {
+	Type                  taskdomain.RecurrenceType       `json:"type,omitempty"`
+	EveryNDays            int                             `json:"every_n_days,omitempty"`
+	DayOfMonth            int                             `json:"day_of_month,omitempty"`
+	Dates                 []string                        `json:"dates,omitempty"`
+	TimeOfDay             string                          `json:"time_of_day,omitempty"`
+	ScheduleStatus        taskdomain.ScheduleStatus       `json:"schedule_status,omitempty"`
+	GenerationWindowUnit  taskdomain.GenerationWindowUnit `json:"generation_window_unit,omitempty"`
+	GenerationWindowValue int                             `json:"generation_window_value,omitempty"`
+}
+
+func New(pool *pgxpool.Pool) *Repository {
+	return &Repository{pool: pool}
+}
+
+func (r *Repository) Create(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error) {
+	const query = `
+		WITH inserted AS (
+			INSERT INTO tasks (
+				title, description, status, kind, template_id, scheduled_for, scheduled_at,
+				assignee_id, completion_report, admin_verified, recurrence, created_at, updated_at
+			)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+			RETURNING
+				id, title, description, status, kind, template_id, scheduled_for, scheduled_at,
+				assignee_id, completion_report, admin_verified, recurrence, created_at, updated_at
+		)
+		SELECT
+			i.id, i.title, i.description, i.status, i.kind, i.template_id, i.scheduled_for, i.scheduled_at,
+			i.assignee_id, COALESCE(e.name, ''), i.completion_report, i.admin_verified, i.recurrence, i.created_at, i.updated_at
+		FROM inserted i
+		LEFT JOIN employees e ON e.id = i.assignee_id
+	`
+
+	row := r.pool.QueryRow(
+		ctx,
+		query,
+		task.Title,
+		task.Description,
+		task.Status,
+		task.Kind,
+		toNullableTemplateID(task.TemplateID),
+		toNullableDate(task.ScheduledFor),
+		toNullableTime(task.ScheduledAt),
+		toNullableAssigneeID(task.AssigneeID),
+		task.CompletionReport,
+		task.AdminVerified,
+		mustRecurrenceJSON(task.Recurrence),
+		task.CreatedAt,
+		task.UpdatedAt,
+	)
+
+	return scanTask(row)
+}
+
+func (r *Repository) GetByID(ctx context.Context, id int64) (*taskdomain.Task, error) {
+	const query = `
+		SELECT
+			t.id, t.title, t.description, t.status, t.kind, t.template_id, t.scheduled_for, t.scheduled_at,
+			t.assignee_id, COALESCE(e.name, ''), t.completion_report, t.admin_verified, t.recurrence, t.created_at, t.updated_at
+		FROM tasks t
+		LEFT JOIN employees e ON e.id = t.assignee_id
+		WHERE t.id = $1
+	`
+
+	row := r.pool.QueryRow(ctx, query, id)
+	found, err := scanTask(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, taskdomain.ErrNotFound
+		}
+
+		return nil, err
+	}
+
+	return found, nil
+}
+
+func (r *Repository) Update(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error) {
+	const query = `
+		WITH updated AS (
+			UPDATE tasks
+			SET title = $1,
+				description = $2,
+				status = $3,
+				kind = $4,
+				scheduled_at = $5,
+				assignee_id = $6,
+				completion_report = $7,
+				admin_verified = $8,
+				recurrence = $9,
+				updated_at = $10
+			WHERE id = $11
+			RETURNING
+				id, title, description, status, kind, template_id, scheduled_for, scheduled_at,
+				assignee_id, completion_report, admin_verified, recurrence, created_at, updated_at
+		)
+		SELECT
+			u.id, u.title, u.description, u.status, u.kind, u.template_id, u.scheduled_for, u.scheduled_at,
+			u.assignee_id, COALESCE(e.name, ''), u.completion_report, u.admin_verified, u.recurrence, u.created_at, u.updated_at
+		FROM updated u
+		LEFT JOIN employees e ON e.id = u.assignee_id
+	`
+
+	row := r.pool.QueryRow(
+		ctx,
+		query,
+		task.Title,
+		task.Description,
+		task.Status,
+		task.Kind,
+		toNullableTime(task.ScheduledAt),
+		toNullableAssigneeID(task.AssigneeID),
+		task.CompletionReport,
+		task.AdminVerified,
+		mustRecurrenceJSON(task.Recurrence),
+		task.UpdatedAt,
+		task.ID,
+	)
+
+	updated, err := scanTask(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, taskdomain.ErrNotFound
+		}
+		return nil, err
+	}
+
+	return updated, nil
+}
+
+func (r *Repository) Delete(ctx context.Context, id int64) error {
+	const query = `DELETE FROM tasks WHERE id = $1`
+
+	result, err := r.pool.Exec(ctx, query, id)
+	if err != nil {
+		return err
+	}
+
+	if result.RowsAffected() == 0 {
+		return taskdomain.ErrNotFound
+	}
+
+	return nil
+}
+
+func (r *Repository) List(ctx context.Context) ([]taskdomain.Task, error) {
+	const query = `
+		SELECT
+			t.id, t.title, t.description, t.status, t.kind, t.template_id, t.scheduled_for, t.scheduled_at,
+			t.assignee_id, COALESCE(e.name, ''), t.completion_report, t.admin_verified, t.recurrence, t.created_at, t.updated_at
+		FROM tasks t
+		LEFT JOIN employees e ON e.id = t.assignee_id
+		ORDER BY
+			CASE WHEN t.kind = 'template' THEN 1 ELSE 0 END,
+			COALESCE(t.scheduled_at, t.scheduled_for::timestamp, t.created_at) DESC,
+			t.id DESC
+	`
+
+	rows, err := r.pool.Query(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	tasks := make([]taskdomain.Task, 0)
+	for rows.Next() {
+		task, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, *task)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return tasks, nil
+}
+
+func (r *Repository) ListRecurringTemplates(ctx context.Context) ([]taskdomain.Task, error) {
+	const query = `
+		SELECT
+			t.id, t.title, t.description, t.status, t.kind, t.template_id, t.scheduled_for, t.scheduled_at,
+			t.assignee_id, COALESCE(e.name, ''), t.completion_report, t.admin_verified, t.recurrence, t.created_at, t.updated_at
+		FROM tasks t
+		LEFT JOIN employees e ON e.id = t.assignee_id
+		WHERE t.kind = 'template'
+		ORDER BY t.id DESC
+	`
+
+	rows, err := r.pool.Query(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	tasks := make([]taskdomain.Task, 0)
+	for rows.Next() {
+		task, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+
+		tasks = append(tasks, *task)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return tasks, nil
+}
+
+func (r *Repository) ListGeneratedDates(ctx context.Context, templateID int64) ([]time.Time, error) {
+	const query = `
+		SELECT scheduled_for
+		FROM tasks
+		WHERE template_id = $1
+		AND scheduled_for IS NOT NULL
+	`
+
+	rows, err := r.pool.Query(ctx, query, templateID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	dates := make([]time.Time, 0)
+	for rows.Next() {
+		var date pgtype.Date
+		if err := rows.Scan(&date); err != nil {
+			return nil, err
+		}
+
+		if date.Valid {
+			dates = append(dates, date.Time.UTC())
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return dates, nil
+}
+
+func (r *Repository) CreateGenerated(ctx context.Context, tasks []taskdomain.Task) error {
+	const query = `
+		INSERT INTO tasks (
+			title, description, status, kind, template_id, scheduled_for, scheduled_at,
+			assignee_id, completion_report, admin_verified, recurrence, created_at, updated_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		ON CONFLICT (template_id, scheduled_for) DO NOTHING
+	`
+
+	batch := &pgx.Batch{}
+	for i := range tasks {
+		task := tasks[i]
+		batch.Queue(
+			query,
+			task.Title,
+			task.Description,
+			task.Status,
+			task.Kind,
+			toNullableTemplateID(task.TemplateID),
+			toNullableDate(task.ScheduledFor),
+			toNullableTime(task.ScheduledAt),
+			toNullableAssigneeID(task.AssigneeID),
+			task.CompletionReport,
+			task.AdminVerified,
+			mustRecurrenceJSON(task.Recurrence),
+			task.CreatedAt,
+			task.UpdatedAt,
+		)
+	}
+
+	results := r.pool.SendBatch(ctx, batch)
+	defer results.Close()
+
+	for range tasks {
+		if _, err := results.Exec(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (r *Repository) ListEmployees(ctx context.Context) ([]employeedomain.Employee, error) {
+	rows, err := r.pool.Query(ctx, `SELECT id, name FROM employees ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	employees := make([]employeedomain.Employee, 0)
+	for rows.Next() {
+		var employee employeedomain.Employee
+		if err := rows.Scan(&employee.ID, &employee.Name); err != nil {
+			return nil, err
+		}
+		employees = append(employees, employee)
+	}
+
+	return employees, rows.Err()
+}
+
+func (r *Repository) EmployeeExists(ctx context.Context, employeeID int64) (bool, error) {
+	var exists bool
+	err := r.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM employees WHERE id = $1)`, employeeID).Scan(&exists)
+	return exists, err
+}
+
+type taskScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanTask(scanner taskScanner) (*taskdomain.Task, error) {
+	var (
+		task           taskdomain.Task
+		status         string
+		kind           string
+		templateID     pgtype.Int8
+		scheduledFor   pgtype.Date
+		scheduledAt    pgtype.Timestamptz
+		assigneeID     pgtype.Int8
+		recurrenceJSON []byte
+	)
+
+	if err := scanner.Scan(
+		&task.ID,
+		&task.Title,
+		&task.Description,
+		&status,
+		&kind,
+		&templateID,
+		&scheduledFor,
+		&scheduledAt,
+		&assigneeID,
+		&task.AssigneeName,
+		&task.CompletionReport,
+		&task.AdminVerified,
+		&recurrenceJSON,
+		&task.CreatedAt,
+		&task.UpdatedAt,
+	); err != nil {
+		return nil, err
+	}
+
+	task.Status = taskdomain.Status(status)
+	task.Kind = taskdomain.Kind(kind)
+	if templateID.Valid {
+		task.TemplateID = &templateID.Int64
+	}
+	if scheduledFor.Valid {
+		date := scheduledFor.Time.UTC()
+		task.ScheduledFor = &date
+	}
+	if scheduledAt.Valid {
+		value := scheduledAt.Time.UTC()
+		task.ScheduledAt = &value
+	}
+	if assigneeID.Valid {
+		task.AssigneeID = &assigneeID.Int64
+	}
+
+	recurrence, err := parseRecurrence(recurrenceJSON)
+	if err != nil {
+		return nil, err
+	}
+	task.Recurrence = recurrence
+
+	return &task, nil
+}
+
+func mustRecurrenceJSON(recurrence *taskdomain.Recurrence) []byte {
+	payload := recurrencePayload{}
+	if recurrence != nil {
+		payload.Type = recurrence.Type
+		payload.EveryNDays = recurrence.EveryNDays
+		payload.DayOfMonth = recurrence.DayOfMonth
+		payload.TimeOfDay = recurrence.TimeOfDay
+		payload.ScheduleStatus = recurrence.ScheduleStatus
+		payload.GenerationWindowUnit = recurrence.GenerationWindowUnit
+		payload.GenerationWindowValue = recurrence.GenerationWindowValue
+		if len(recurrence.Dates) > 0 {
+			payload.Dates = make([]string, 0, len(recurrence.Dates))
+			for _, date := range recurrence.Dates {
+				payload.Dates = append(payload.Dates, date.UTC().Format(time.DateOnly))
+			}
+		}
+	}
+
+	data, _ := json.Marshal(payload)
+	return data
+}
+
+func parseRecurrence(data []byte) (*taskdomain.Recurrence, error) {
+	if len(data) == 0 || string(data) == "{}" {
+		return nil, nil
+	}
+
+	var payload recurrencePayload
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, err
+	}
+	if payload.Type == "" {
+		return nil, nil
+	}
+
+	recurrence := &taskdomain.Recurrence{
+		Type:                  payload.Type,
+		EveryNDays:            payload.EveryNDays,
+		DayOfMonth:            payload.DayOfMonth,
+		TimeOfDay:             payload.TimeOfDay,
+		ScheduleStatus:        payload.ScheduleStatus,
+		GenerationWindowUnit:  payload.GenerationWindowUnit,
+		GenerationWindowValue: payload.GenerationWindowValue,
+	}
+	if len(payload.Dates) > 0 {
+		recurrence.Dates = make([]time.Time, 0, len(payload.Dates))
+		for _, raw := range payload.Dates {
+			date, err := time.Parse(time.DateOnly, raw)
+			if err != nil {
+				return nil, err
+			}
+			recurrence.Dates = append(recurrence.Dates, date.UTC())
+		}
+	}
+
+	return recurrence, nil
+}
+
+func toNullableTemplateID(id *int64) any {
+	if id == nil {
+		return nil
+	}
+	return *id
+}
+
+func toNullableAssigneeID(id *int64) any {
+	if id == nil {
+		return nil
+	}
+	return *id
+}
+
+func toNullableDate(date *time.Time) any {
+	if date == nil {
+		return nil
+	}
+	return date.UTC().Format(time.DateOnly)
+}
+
+func toNullableTime(value *time.Time) any {
+	if value == nil {
+		return nil
+	}
+	return value.UTC()
+}
+
+
+================================================================================
+📁 ПАПКА: ainurgo/internal\transport/
+================================================================================
+
+================================================================================
+📁 ПАПКА: ainurgo/internal\transport\http/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\router.go
+Размер: 1,531 байт
+────────────────────────────────────────────────────────────────────────────────
+package transporthttp
+
+import (
+	"net/http"
+
+	"github.com/gorilla/mux"
+
+	swaggerdocs "example.com/taskservice/internal/transport/http/docs"
+	httphandlers "example.com/taskservice/internal/transport/http/handlers"
+)
+
+func NewRouter(taskHandler *httphandlers.TaskHandler, docsHandler *swaggerdocs.Handler) *mux.Router {
+	router := mux.NewRouter().StrictSlash(true)
+
+	router.HandleFunc("/swagger/openapi.json", docsHandler.ServeSpec).Methods(http.MethodGet)
+	router.HandleFunc("/swagger/", docsHandler.ServeUI).Methods(http.MethodGet)
+	router.HandleFunc("/swagger", docsHandler.RedirectToUI).Methods(http.MethodGet)
+	router.HandleFunc("/demo/", docsHandler.ServeDemo).Methods(http.MethodGet)
+	router.HandleFunc("/demo", docsHandler.RedirectToDemo).Methods(http.MethodGet)
+	router.HandleFunc("/employee-demo/", docsHandler.ServeEmployeeDemo).Methods(http.MethodGet)
+	router.HandleFunc("/employee-demo", docsHandler.RedirectToEmployeeDemo).Methods(http.MethodGet)
+
+	api := router.PathPrefix("/api/v1").Subrouter()
+
+	api.HandleFunc("/employees", taskHandler.ListEmployees).Methods(http.MethodGet)
+	api.HandleFunc("/tasks", taskHandler.Create).Methods(http.MethodPost)
+	api.HandleFunc("/tasks", taskHandler.List).Methods(http.MethodGet)
+	api.HandleFunc("/tasks/{id:[0-9]+}", taskHandler.GetByID).Methods(http.MethodGet)
+	api.HandleFunc("/tasks/{id:[0-9]+}", taskHandler.Update).Methods(http.MethodPut)
+	api.HandleFunc("/tasks/{id:[0-9]+}", taskHandler.Delete).Methods(http.MethodDelete)
+
+	return router
+}
+
+
+================================================================================
+📁 ПАПКА: ainurgo/internal\transport\http\docs/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\docs\demo_admin.html
+Размер: 32,306 байт
+────────────────────────────────────────────────────────────────────────────────
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Task Admin Demo</title>
+  <style>
+    :root { --bg:#f4efe5; --card:#fffaf2; --border:#d8d0c7; --ink:#203040; --muted:#6b7280; --accent:#0f766e; --soft:#d6f3ef; --soft-strong:#b9ebe3; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:"Segoe UI",Tahoma,sans-serif; color:var(--ink); background:linear-gradient(180deg,#f8f2e8,#ece8df); }
+    .page { max-width:1460px; margin:0 auto; padding:24px; }
+    .hero { display:flex; justify-content:space-between; gap:16px; align-items:flex-start; margin-bottom:20px; flex-wrap:wrap; }
+    .hero h1 { margin:0; font-size:2.2rem; }
+    .hero p { margin:8px 0 0; color:var(--muted); max-width:760px; }
+    .links { display:flex; gap:10px; flex-wrap:wrap; }
+    .link, button { border:0; border-radius:999px; padding:11px 16px; font:inherit; cursor:pointer; text-decoration:none; }
+    .link, .secondary { background:#ece5dd; color:var(--ink); }
+    .primary { background:linear-gradient(135deg,#0f766e,#115e59); color:#fff; }
+    .layout { display:grid; grid-template-columns:470px minmax(0,1fr); gap:20px; }
+    .card { background:rgba(255,250,242,.96); border:1px solid var(--border); border-radius:20px; box-shadow:0 18px 50px rgba(15,23,42,.07); }
+    .card-inner { padding:20px; }
+    .section-title { margin:0; font-size:1.1rem; }
+    .section-head { display:flex; justify-content:space-between; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:14px; }
+    .grid { display:grid; gap:14px; }
+    .row { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+    .row-3 { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
+    label { display:grid; gap:7px; font-weight:600; }
+    input, textarea, select { width:100%; padding:12px 14px; border:1px solid var(--border); border-radius:14px; font:inherit; background:#fff; color:var(--ink); }
+    textarea { min-height:92px; resize:vertical; }
+    .status, .helper { color:var(--muted); font-size:.92rem; }
+    .status.error { color:#b91c1c; }
+    .task-list { display:grid; gap:12px; }
+    .task-group { display:grid; gap:12px; }
+    .task { border:1px solid var(--border); border-radius:18px; padding:16px; background:#fff; cursor:pointer; transition:border-color .15s ease, box-shadow .15s ease; }
+    .task.selected { border-color:#0f766e; box-shadow:0 10px 26px rgba(15,118,110,.12); }
+    .task h3 { margin:0 0 12px; font-size:1rem; }
+    .pillbar { display:flex; gap:8px; flex-wrap:wrap; }
+    .pill { display:inline-flex; padding:6px 10px; border-radius:999px; background:var(--soft); font-size:.82rem; font-weight:700; color:#134e4a; }
+    .pill-status-new { background:#d8f3dc; color:#1b5e20; }
+    .pill-status-assigned { background:#dbeafe; color:#1d4ed8; }
+    .pill-status-in-progress { background:#fef3c7; color:#92400e; }
+    .pill-status-done { background:#fecaca; color:#991b1b; }
+    .filterbar { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px; }
+    .filter { padding:10px 14px; border:1px solid var(--border); border-radius:999px; background:#fff; color:var(--ink); cursor:pointer; }
+    .filter.active { background:var(--soft-strong); border-color:#0f766e; color:#134e4a; }
+    .detail-card { border:1px solid var(--border); border-radius:18px; padding:18px; background:#fffaf8; }
+    .detail-card h3 { margin:0; font-size:1.05rem; }
+    .actions { display:flex; gap:10px; flex-wrap:wrap; }
+    .empty { padding:24px; border:1px dashed var(--border); border-radius:18px; text-align:center; color:var(--muted); }
+    .subcard { border:1px solid var(--border); border-radius:16px; padding:14px; background:#fff; }
+    .date-list { display:flex; gap:8px; flex-wrap:wrap; }
+    .date-chip { display:inline-flex; align-items:center; gap:8px; padding:8px 12px; border-radius:999px; background:var(--soft); color:#134e4a; }
+    .date-chip button { padding:0; border-radius:0; background:transparent; color:#134e4a; }
+    .inline-actions { display:flex; gap:8px; align-items:end; }
+    .checkbox-inline { display:flex; align-items:center; gap:10px; font-weight:600; }
+    .checkbox-inline input { width:auto; margin:0; }
+    [hidden] { display:none !important; }
+    @media (max-width: 1080px) { .layout { grid-template-columns:1fr; } }
+    @media (max-width: 680px) { .row, .row-3 { grid-template-columns:1fr; } .page { padding:14px; } }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="hero">
+      <div>
+        <h1>Админ демо</h1>
+        <p>Создание задач, назначение сотрудников, дедлайны и настройки повторяемости. Доступно демо сотрудника и Swagger.</p>
+      </div>
+      <div class="links">
+        <a class="link" href="/employee-demo/">Открыть демо сотрудника</a>
+        <a class="link" href="/swagger/">Swagger</a>
+      </div>
+    </div>
+
+    <div class="layout">
+      <section class="card">
+        <div class="card-inner">
+          <h2 class="section-title" style="margin-bottom:14px">Новая задача</h2>
+          <form id="create-form" class="grid">
+            <label>Название<input id="create-title" required></label>
+            <label>Описание<textarea id="create-description"></textarea></label>
+
+            <div class="row">
+              <label>Статус
+                <select id="create-status">
+                  <option value="new">new</option>
+                  <option value="assigned">assigned</option>
+                  <option value="in_progress">in_progress</option>
+                  <option value="done">done</option>
+                </select>
+              </label>
+              <label>Исполнитель
+                <select id="create-assignee"></select>
+              </label>
+            </div>
+
+            <div class="subcard grid" id="deadline-card">
+              <h3 style="margin:0">Срок выполнения</h3>
+              <label>Дата и время до скольки сделать
+                <input id="create-scheduled-at" type="datetime-local">
+              </label>
+              <div class="helper">Это поле используется и для разовой задачи, и как базовая дата/время для повторяемых задач.</div>
+            </div>
+
+            <div class="subcard grid" id="recurrence-card">
+              <h3 style="margin:0">Настройки повторяемости</h3>
+              <div class="row">
+                <label>Тип повторения
+                  <select id="create-recurrence-type">
+                    <option value="">Без повторения</option>
+                    <option value="today">Сегодня</option>
+                    <option value="specific_dates">Только в определенные дни</option>
+                    <option value="daily">Раз в N дней</option>
+                    <option value="monthly">Ежемесячно</option>
+                    <option value="odd_days">Нечетные дни месяца</option>
+                    <option value="even_days">Четные дни месяца</option>
+                  </select>
+                </label>
+                <label id="time-of-day-wrap">Время выполнения
+                  <input id="create-time-of-day" type="time" value="09:00">
+                </label>
+              </div>
+
+              <div id="recurrence-none" class="helper">Для разовой задачи используется только блок “Срок выполнения”.</div>
+              <div id="recurrence-today" class="helper" hidden>Для типа “Сегодня” будет использована сегодняшняя дата и выбранное время.</div>
+
+              <div id="recurrence-daily" class="row" hidden>
+                <label>Каждый N-й день
+                  <input id="create-every-n-days" type="number" min="2" value="2">
+                </label>
+                <label>Окно генерации
+                  <input id="create-daily-window" type="number" min="1" value="30">
+                </label>
+              </div>
+
+              <div id="recurrence-monthly" class="row" hidden>
+                <label>Число месяца
+                  <select id="create-day-of-month"></select>
+                </label>
+                <label>Окно генерации в месяцах
+                  <input id="create-monthly-window" type="number" min="1" value="12">
+                </label>
+              </div>
+
+              <div id="recurrence-parity" class="grid" hidden>
+                <div class="helper">Выберите, на сколько вперед создать задачи. Максимум можно выбрать 8 недель.</div>
+                <label>На сколько недель вперед
+                  <select id="create-parity-weeks">
+                    <option value="1">1</option>
+                    <option value="2">2</option>
+                    <option value="3">3</option>
+                    <option value="4">4</option>
+                    <option value="5">5</option>
+                    <option value="6">6</option>
+                    <option value="7">7</option>
+                    <option value="8">8</option>
+                  </select>
+                </label>
+              </div>
+
+              <div id="recurrence-specific" class="grid" hidden>
+                <div class="inline-actions">
+                  <label style="flex:1">Выбрать дату
+                    <input id="create-specific-date" type="date">
+                  </label>
+                  <button class="secondary" type="button" id="add-specific-date-btn">Добавить дату</button>
+                </div>
+                <div id="specific-date-list" class="date-list"></div>
+              </div>
+            </div>
+
+            <div class="actions">
+              <button class="primary" type="submit">Создать задачу</button>
+              <button class="secondary" type="button" id="reload-btn">Обновить</button>
+            </div>
+            <div id="create-status-message" class="status"></div>
+          </form>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-inner">
+          <div class="section-head">
+            <h2 class="section-title">Все задачи</h2>
+            <div id="filterbar" class="filterbar"></div>
+          </div>
+          <div id="list-status" class="status"></div>
+          <div id="task-list" class="task-list"></div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    const state = {
+      employees: [],
+      tasks: [],
+      selectedTaskId: null,
+      activeFilter: 'all',
+      selectedSpecificDates: []
+    };
+    const listStatus = document.getElementById('list-status');
+    const createStatusMessage = document.getElementById('create-status-message');
+
+    function setStatus(node, message, isError = false) {
+      node.textContent = message || '';
+      node.classList.toggle('error', !!isError);
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+    }
+
+    function assigneeOptions(blankLabel) {
+      return ['<option value="">' + escapeHtml(blankLabel) + '</option>']
+        .concat(state.employees.map(e => '<option value="' + e.id + '">' + escapeHtml(e.name) + '</option>'))
+        .join('');
+    }
+
+    function fillAssigneeSelects() {
+      document.getElementById('create-assignee').innerHTML = assigneeOptions('Не выбран');
+    }
+
+    function workflowStatus(task) {
+      if (!task) return '';
+      if (task.assignee_id && task.status === 'new') return 'assigned';
+      return task.status;
+    }
+
+    function statusPillClass(status) {
+      switch (status) {
+        case 'assigned':
+          return 'pill pill-status-assigned';
+        case 'in_progress':
+          return 'pill pill-status-in-progress';
+        case 'done':
+          return 'pill pill-status-done';
+        default:
+          return 'pill pill-status-new';
+      }
+    }
+
+    function recurrenceSummary(task) {
+      if (!task.recurrence || !task.recurrence.type) return '';
+      const type = task.recurrence.type;
+      if (type === 'daily') return 'каждые ' + task.recurrence.every_n_days + ' дн.';
+      if (type === 'monthly') return 'каждое ' + task.recurrence.day_of_month + ' число';
+      if (type === 'specific_dates') return 'конкретные даты';
+      if (type === 'odd_days') return 'нечетные дни';
+      if (type === 'even_days') return 'четные дни';
+      return type;
+    }
+
+    function formatScheduledAt(value) {
+      if (!value) return '';
+      const parsed = new Date(value);
+      if (Number.isNaN(parsed.getTime())) return value;
+      return parsed.toLocaleString('ru-RU', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+    }
+
+    function taskSortTime(task) {
+      if (task.scheduled_at) {
+        const parsed = new Date(task.scheduled_at);
+        if (!Number.isNaN(parsed.getTime())) return parsed.getTime();
+      }
+      if (task.scheduled_for) {
+        const parsed = new Date(task.scheduled_for + 'T23:59:59');
+        if (!Number.isNaN(parsed.getTime())) return parsed.getTime();
+      }
+      if (task.created_at) {
+        const parsed = new Date(task.created_at);
+        if (!Number.isNaN(parsed.getTime())) return parsed.getTime();
+      }
+      return Number.MAX_SAFE_INTEGER;
+    }
+
+    function adminVisibleTasksSource() {
+      return state.tasks
+        .filter(task => task.kind !== 'template')
+        .slice()
+        .sort((left, right) => {
+          const diff = taskSortTime(left) - taskSortTime(right);
+          if (diff !== 0) return diff;
+          return left.id - right.id;
+        });
+    }
+
+    function taskMatchesFilter(task) {
+      switch (state.activeFilter) {
+        case 'new':
+          return workflowStatus(task) === 'new' || workflowStatus(task) === 'assigned';
+        case 'in_progress':
+          return workflowStatus(task) === 'in_progress';
+        case 'unverified':
+          return workflowStatus(task) === 'done' && !task.admin_verified;
+        case 'done':
+          return workflowStatus(task) === 'done' && !!task.admin_verified;
+        default:
+          return true;
+      }
+    }
+
+    function visibleTasks() {
+      return adminVisibleTasksSource().filter(taskMatchesFilter);
+    }
+
+    function stats() {
+      const tasks = adminVisibleTasksSource();
+      return {
+        all: tasks.length,
+        new: tasks.filter(task => workflowStatus(task) === 'new' || workflowStatus(task) === 'assigned').length,
+        in_progress: tasks.filter(task => workflowStatus(task) === 'in_progress').length,
+        unverified: tasks.filter(task => workflowStatus(task) === 'done' && !task.admin_verified).length,
+        done: tasks.filter(task => workflowStatus(task) === 'done' && !!task.admin_verified).length
+      };
+    }
+
+    function renderFilters() {
+      const totals = stats();
+      const items = [
+        ['all', 'Все', totals.all],
+        ['new', 'Новые / назначенные', totals.new],
+        ['in_progress', 'В работе', totals.in_progress],
+        ['unverified', 'Не подтвержденные админом', totals.unverified],
+        ['done', 'Завершенные', totals.done]
+      ];
+      document.getElementById('filterbar').innerHTML = items.map(item => {
+        const active = item[0] === state.activeFilter ? ' active' : '';
+        return '<button class="filter' + active + '" type="button" data-filter="' + item[0] + '">' +
+          escapeHtml(item[1]) + ' (' + item[2] + ')' +
+          '</button>';
+      }).join('');
+    }
+
+    function renderSpecificDateList() {
+      const node = document.getElementById('specific-date-list');
+      if (!state.selectedSpecificDates.length) {
+        node.innerHTML = '<div class="helper">Даты пока не выбраны</div>';
+        return;
+      }
+      node.innerHTML = state.selectedSpecificDates.map(date =>
+        '<span class="date-chip">' + escapeHtml(date) + '<button type="button" data-remove-date="' + escapeHtml(date) + '">×</button></span>'
+      ).join('');
+    }
+
+    function setVisible(id, visible, displayValue = 'grid') {
+      const node = document.getElementById(id);
+      if (!node) return;
+      node.hidden = !visible;
+      node.style.display = visible ? displayValue : 'none';
+    }
+
+    function syncRecurrenceVisibility() {
+      const type = document.getElementById('create-recurrence-type').value;
+      const none = type === '';
+      const today = type === 'today';
+      const specific = type === 'specific_dates';
+      const daily = type === 'daily';
+      const monthly = type === 'monthly';
+      const parity = type === 'odd_days' || type === 'even_days';
+
+      setVisible('deadline-card', none, 'grid');
+      setVisible('recurrence-none', none, 'block');
+      setVisible('time-of-day-wrap', today || specific || daily || monthly || parity, 'grid');
+      setVisible('recurrence-today', today, 'block');
+      setVisible('recurrence-daily', daily, 'grid');
+      setVisible('recurrence-monthly', monthly, 'grid');
+      setVisible('recurrence-parity', parity, 'grid');
+      setVisible('recurrence-specific', specific, 'grid');
+    }
+
+    function buildScheduledAt() {
+      const type = document.getElementById('create-recurrence-type').value;
+      const rawDateTime = document.getElementById('create-scheduled-at').value;
+      const timeOfDay = document.getElementById('create-time-of-day').value || '09:00';
+
+      if (type === 'today') {
+        const today = new Date();
+        const date = today.toISOString().slice(0, 10);
+        return date + 'T' + timeOfDay;
+      }
+
+      if (type === 'specific_dates' && state.selectedSpecificDates.length) {
+        return state.selectedSpecificDates[0] + 'T' + timeOfDay;
+      }
+
+      if (rawDateTime) {
+        return rawDateTime;
+      }
+
+      return '';
+    }
+
+    function buildRecurrencePayload() {
+      const type = document.getElementById('create-recurrence-type').value;
+      const timeOfDay = document.getElementById('create-time-of-day').value || '09:00';
+
+      if (!type || type === 'today') {
+        return null;
+      }
+
+      if (type === 'specific_dates') {
+        return {
+          type: 'specific_dates',
+          dates: state.selectedSpecificDates.slice(),
+          time_of_day: timeOfDay,
+          schedule_status: 'active',
+          generation_window_unit: 'days',
+          generation_window_value: 365
+        };
+      }
+
+      if (type === 'daily') {
+        return {
+          type: 'daily',
+          every_n_days: Number(document.getElementById('create-every-n-days').value || 2),
+          time_of_day: timeOfDay,
+          schedule_status: 'active',
+          generation_window_unit: 'days',
+          generation_window_value: Number(document.getElementById('create-daily-window').value || 30)
+        };
+      }
+
+      if (type === 'monthly') {
+        return {
+          type: 'monthly',
+          day_of_month: Number(document.getElementById('create-day-of-month').value || 1),
+          time_of_day: timeOfDay,
+          schedule_status: 'active',
+          generation_window_unit: 'months',
+          generation_window_value: Number(document.getElementById('create-monthly-window').value || 12)
+        };
+      }
+
+      if (type === 'odd_days' || type === 'even_days') {
+        return {
+          type: type,
+          time_of_day: timeOfDay,
+          schedule_status: 'active',
+          generation_window_unit: 'days',
+          generation_window_value: Number(document.getElementById('create-parity-weeks').value || 1) * 7
+        };
+      }
+
+      return {
+        type: type,
+        time_of_day: timeOfDay,
+        schedule_status: 'active',
+        generation_window_unit: 'months',
+        generation_window_value: 12
+      };
+    }
+
+    function detailMarkup(task) {
+      const assigneeSelect = assigneeOptions('Не выбрана').replace(
+        'value="' + escapeHtml(task.assignee_id || '') + '"',
+        'value="' + escapeHtml(task.assignee_id || '') + '" selected'
+      );
+      return ''
+        + '<div class="detail-card" data-detail-id="' + task.id + '">'
+        +   '<h3>' + escapeHtml(task.title) + '</h3>'
+        +   '<div class="pillbar" style="margin:12px 0">'
+        +     '<span class="pill">id: ' + task.id + '</span>'
+        +     '<span class="pill">kind: ' + escapeHtml(task.kind) + '</span>'
+        +     (task.scheduled_for ? '<span class="pill">scheduled_for: ' + escapeHtml(task.scheduled_for) + '</span>' : '')
+        +     (task.scheduled_at ? '<span class="pill">до: ' + escapeHtml(formatScheduledAt(task.scheduled_at)) + '</span>' : '')
+        +     (task.recurrence ? '<span class="pill">повтор: ' + escapeHtml(recurrenceSummary(task)) + '</span>' : '')
+        +   '</div>'
+        +   '<div class="grid">'
+        +     '<label>Описание<textarea id="detail-description">' + escapeHtml(task.description || '') + '</textarea></label>'
+        +     '<div class="row">'
+        +       '<label>Статус'
+        +         '<select id="detail-status">'
+        +           '<option value="new"' + (workflowStatus(task) === 'new' ? ' selected' : '') + '>new</option>'
+        +           '<option value="assigned"' + (workflowStatus(task) === 'assigned' ? ' selected' : '') + '>assigned</option>'
+        +           '<option value="in_progress"' + (workflowStatus(task) === 'in_progress' ? ' selected' : '') + '>in_progress</option>'
+        +           '<option value="done"' + (workflowStatus(task) === 'done' ? ' selected' : '') + '>done</option>'
+        +         '</select>'
+        +       '</label>'
+        +       '<label>Исполнитель'
+        +         '<select id="detail-assignee">' + assigneeSelect + '</select>'
+        +       '</label>'
+        +     '</div>'
+        +     '<label>Срок выполнения'
+        +       '<input id="detail-scheduled-at" type="datetime-local" value="' + escapeHtml(task.scheduled_at || '') + '">'
+        +     '</label>'
+        +     '<label>Отчет<textarea id="detail-report">' + escapeHtml(task.completion_report || '') + '</textarea></label>'
+        +     '<label class="checkbox-inline"><input id="detail-verified" type="checkbox"' + (task.admin_verified ? ' checked' : '') + '> <span>Админ проверил отчет</span></label>'
+        +     '<div class="actions">'
+        +       '<button class="primary" type="button" id="save-detail-btn">Сохранить изменения</button>'
+        +     '</div>'
+        +     '<div id="detail-message" class="status"></div>'
+        +   '</div>'
+        + '</div>';
+    }
+
+    function renderTasks() {
+      renderFilters();
+      const tasks = visibleTasks();
+      const node = document.getElementById('task-list');
+      if (!tasks.length) {
+        node.innerHTML = '<div class="empty">В этом статусе задач пока нет</div>';
+        return;
+      }
+
+      node.innerHTML = tasks.map(task => {
+        const selected = task.id === state.selectedTaskId ? ' selected' : '';
+        const assignee = task.assignee_name
+          ? '<span class="pill">assignee: ' + escapeHtml(task.assignee_name) + '</span>'
+          : '<span class="pill">не взята в работу</span>';
+        const scheduledAt = task.scheduled_at ? '<span class="pill">до: ' + escapeHtml(formatScheduledAt(task.scheduled_at)) + '</span>' : '';
+        const recurrence = task.recurrence ? '<span class="pill">повтор: ' + escapeHtml(recurrenceSummary(task)) + '</span>' : '';
+        const verified = task.admin_verified ? '<span class="pill">admin verified</span>' : '';
+        const detail = task.id === state.selectedTaskId ? detailMarkup(task) : '';
+        return ''
+          + '<div class="task-group">'
+          +   '<article class="task' + selected + '" data-task-id="' + task.id + '">'
+          +     '<h3>' + escapeHtml(task.title) + '</h3>'
+          +     '<div class="pillbar">'
+          +       '<span class="' + statusPillClass(workflowStatus(task)) + '">status: ' + escapeHtml(workflowStatus(task)) + '</span>'
+          +       assignee
+          +       scheduledAt
+          +       recurrence
+          +       verified
+          +     '</div>'
+          +     '<p>' + escapeHtml(task.description || '') + '</p>'
+          +   '</article>'
+          +   detail
+          + '</div>';
+      }).join('');
+    }
+
+    async function loadEmployees() {
+      const response = await fetch('/api/v1/employees');
+      state.employees = await response.json();
+      fillAssigneeSelects();
+    }
+
+    async function loadTasks() {
+      setStatus(listStatus, 'Загружаю задачи...');
+      try {
+        const response = await fetch('/api/v1/tasks');
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        state.tasks = await response.json();
+        if (!state.tasks.some(task => task.id === state.selectedTaskId)) {
+          state.selectedTaskId = null;
+        }
+        if (state.selectedTaskId && !visibleTasks().some(task => task.id === state.selectedTaskId)) {
+          state.selectedTaskId = null;
+        }
+        renderTasks();
+        setStatus(listStatus, 'Список обновлен');
+      } catch (error) {
+        setStatus(listStatus, 'Не удалось загрузить задачи: ' + error.message, true);
+      }
+    }
+
+    function taskPayloadFromForm(prefix, task) {
+      const assigneeValue = document.getElementById(prefix + '-assignee').value;
+      const reportField = document.getElementById(prefix + '-report');
+      const verifiedField = document.getElementById(prefix + '-verified');
+      const scheduledField = document.getElementById(prefix + '-scheduled-at');
+      return {
+        title: task ? task.title : document.getElementById(prefix + '-title').value.trim(),
+        description: document.getElementById(prefix + '-description').value.trim(),
+        status: document.getElementById(prefix + '-status').value,
+        scheduled_at: scheduledField ? scheduledField.value : buildScheduledAt(),
+        assignee_id: assigneeValue ? Number(assigneeValue) : null,
+        completion_report: reportField ? reportField.value.trim() : '',
+        admin_verified: verifiedField ? verifiedField.checked : false,
+        recurrence: task ? (task.recurrence || null) : buildRecurrencePayload()
+      };
+    }
+
+    document.getElementById('create-form').addEventListener('submit', async event => {
+      event.preventDefault();
+      setStatus(createStatusMessage, 'Сохраняю...');
+
+      const recurrenceType = document.getElementById('create-recurrence-type').value;
+      if (recurrenceType === 'specific_dates' && state.selectedSpecificDates.length === 0) {
+        setStatus(createStatusMessage, 'Для конкретных дат нужно выбрать хотя бы одну дату', true);
+        return;
+      }
+
+      try {
+        const response = await fetch('/api/v1/tasks', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(taskPayloadFromForm('create'))
+        });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(body.error || ('HTTP ' + response.status));
+        event.target.reset();
+        state.selectedSpecificDates = [];
+        renderSpecificDateList();
+        fillAssigneeSelects();
+        document.getElementById('create-time-of-day').value = '09:00';
+        document.getElementById('create-recurrence-type').value = '';
+        syncRecurrenceVisibility();
+        setStatus(createStatusMessage, 'Задача создана');
+        state.activeFilter = 'all';
+        await loadTasks();
+      } catch (error) {
+        setStatus(createStatusMessage, error.message, true);
+      }
+    });
+
+    document.getElementById('filterbar').addEventListener('click', event => {
+      const button = event.target.closest('[data-filter]');
+      if (!button) return;
+      state.activeFilter = button.getAttribute('data-filter');
+      if (state.selectedTaskId && !visibleTasks().some(task => task.id === state.selectedTaskId)) {
+        state.selectedTaskId = null;
+      }
+      renderTasks();
+    });
+
+    document.getElementById('task-list').addEventListener('click', async event => {
+      const saveButton = event.target.closest('#save-detail-btn');
+      if (saveButton) {
+        const task = state.tasks.find(t => t.id === state.selectedTaskId);
+        if (!task) return;
+        const detailMessage = document.getElementById('detail-message');
+        setStatus(detailMessage, 'Сохраняю...');
+        try {
+          const response = await fetch('/api/v1/tasks/' + task.id, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(taskPayloadFromForm('detail', task))
+          });
+          const body = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(body.error || ('HTTP ' + response.status));
+          setStatus(detailMessage, 'Изменения сохранены');
+          await loadTasks();
+        } catch (error) {
+          setStatus(detailMessage, error.message, true);
+        }
+        return;
+      }
+
+      const card = event.target.closest('[data-task-id]');
+      if (!card) return;
+      const clickedID = Number(card.getAttribute('data-task-id'));
+      state.selectedTaskId = state.selectedTaskId === clickedID ? null : clickedID;
+      renderTasks();
+    });
+
+    document.getElementById('create-recurrence-type').addEventListener('change', syncRecurrenceVisibility);
+
+    document.getElementById('add-specific-date-btn').addEventListener('click', () => {
+      const input = document.getElementById('create-specific-date');
+      const value = input.value;
+      if (!value) return;
+      if (!state.selectedSpecificDates.includes(value)) {
+        state.selectedSpecificDates.push(value);
+        state.selectedSpecificDates.sort();
+      }
+      input.value = '';
+      renderSpecificDateList();
+    });
+
+    document.getElementById('specific-date-list').addEventListener('click', event => {
+      const button = event.target.closest('[data-remove-date]');
+      if (!button) return;
+      const value = button.getAttribute('data-remove-date');
+      state.selectedSpecificDates = state.selectedSpecificDates.filter(date => date !== value);
+      renderSpecificDateList();
+    });
+
+    document.getElementById('reload-btn').addEventListener('click', loadTasks);
+
+    function fillDayOfMonthOptions() {
+      document.getElementById('create-day-of-month').innerHTML = Array.from({ length: 30 }, (_, index) => index + 1)
+        .map(day => '<option value="' + day + '">' + day + '</option>')
+        .join('');
+    }
+
+    fillDayOfMonthOptions();
+    renderSpecificDateList();
+    syncRecurrenceVisibility();
+    Promise.all([loadEmployees(), loadTasks()]);
+  </script>
+</body>
+</html>
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\docs\demo_employee.html
+Размер: 19,030 байт
+────────────────────────────────────────────────────────────────────────────────
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Employee Demo</title>
+  <style>
+    :root { --bg:#eef5f1; --card:#ffffff; --border:#d0ddd7; --ink:#203040; --muted:#6b7280; --accent:#136f63; --soft:#d9f3ef; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:"Segoe UI",Tahoma,sans-serif; color:var(--ink); background:linear-gradient(180deg,#eef5f1,#e8efea); }
+    .page { max-width:1380px; margin:0 auto; padding:24px; }
+    .hero { display:flex; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom:18px; }
+    .hero h1 { margin:0; font-size:2rem; }
+    .hero p { margin:8px 0 0; color:var(--muted); max-width:760px; }
+    .link { display:inline-flex; align-items:center; padding:10px 14px; border-radius:999px; background:#e5ece7; color:var(--ink); text-decoration:none; }
+    .layout { display:grid; grid-template-columns:260px minmax(0,1fr) 360px; gap:18px; }
+    .card { background:rgba(255,255,255,.96); border:1px solid var(--border); border-radius:20px; box-shadow:0 18px 50px rgba(15,23,42,.06); }
+    .card-inner { padding:18px; }
+    .section-title { margin:0 0 14px; font-size:1.05rem; }
+    .grid { display:grid; gap:12px; }
+    .task-list { display:grid; gap:16px; }
+    .task-section { display:grid; gap:12px; }
+    .task-section-title { margin:0; font-size:1rem; }
+    .task { border:1px solid var(--border); border-radius:18px; padding:15px; background:#fff; cursor:pointer; }
+    .task.selected { border-color:#136f63; box-shadow:0 10px 24px rgba(19,111,99,.12); }
+    .pillbar { display:flex; flex-wrap:wrap; gap:8px; }
+    .pill { display:inline-flex; padding:6px 10px; border-radius:999px; background:var(--soft); color:#134e4a; font-size:.82rem; font-weight:700; }
+    .pill-status-new { background:#d8f3dc; color:#1b5e20; }
+    .pill-status-assigned { background:#dbeafe; color:#1d4ed8; }
+    .pill-status-in-progress { background:#fef3c7; color:#92400e; }
+    .pill-status-done { background:#fecaca; color:#991b1b; }
+    .stat { padding:12px 14px; border:1px solid var(--border); border-radius:16px; background:#fafdfb; }
+    .stat strong { display:block; font-size:1.4rem; }
+    label { display:grid; gap:7px; font-weight:600; }
+    input, select, textarea, button { font:inherit; }
+    input, select, textarea { width:100%; padding:12px 14px; border:1px solid var(--border); border-radius:14px; background:#fff; }
+    textarea { min-height:120px; resize:vertical; }
+    .actions { display:flex; gap:10px; flex-wrap:wrap; }
+    button { border:0; border-radius:999px; padding:11px 16px; cursor:pointer; }
+    .primary { background:linear-gradient(135deg,#136f63,#115e59); color:#fff; }
+    .secondary { background:#e9eeeb; color:var(--ink); }
+    .status { color:var(--muted); font-size:.92rem; min-height:22px; }
+    .status.error { color:#b91c1c; }
+    .empty { padding:24px; border:1px dashed var(--border); border-radius:18px; text-align:center; color:var(--muted); }
+    [hidden] { display:none !important; }
+    @media (max-width: 1100px) { .layout { grid-template-columns:1fr; } }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="hero">
+      <div>
+        <h1>Демо сотрудника</h1>
+        <p>Выбери сотрудника сверху. Он видит свои задачи и свободные задачи без исполнителя. Сотрудник может взять задачу в работу, завершить ее с отчетом или вернуть обратно в общий пул.</p>
+      </div>
+      <a class="link" href="/demo/">Открыть админ демо</a>
+    </div>
+
+    <div class="card" style="margin-bottom:18px">
+      <div class="card-inner">
+        <label>Сотрудник
+          <select id="employee-select"></select>
+        </label>
+      </div>
+    </div>
+
+    <div class="layout">
+      <aside class="card">
+        <div class="card-inner">
+          <h2 class="section-title">Статистика</h2>
+          <div class="grid" id="stats"></div>
+        </div>
+      </aside>
+
+      <section class="card">
+        <div class="card-inner">
+          <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap">
+            <h2 class="section-title" style="margin:0">Задачи сотрудника</h2>
+            <button class="secondary" type="button" id="reload-btn">Обновить</button>
+          </div>
+          <div id="list-status" class="status"></div>
+          <div id="task-list" class="task-list"></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-inner">
+          <h2 class="section-title">Работа с задачей</h2>
+          <div id="detail-empty" class="empty">Выбери задачу справа, чтобы взять ее в работу, завершить с отчетом или переназначить на другого сотрудника.</div>
+          <div id="task-detail" hidden>
+            <h3 id="detail-title" style="margin-top:0"></h3>
+            <div id="detail-meta" class="pillbar" style="margin-bottom:12px"></div>
+            <p id="detail-description"></p>
+            <div class="grid">
+              <label>Статус задачи
+                <input id="detail-status-view" readonly>
+              </label>
+              <label id="detail-report-label">Отчет перед закрытием
+                <textarea id="detail-report" placeholder="Опиши выполненную работу"></textarea>
+              </label>
+              <div class="actions">
+                <button class="secondary" type="button" id="take-task-btn">Взять в работу</button>
+                <button class="primary" type="button" id="complete-task-btn">Завершить</button>
+                <button class="secondary" type="button" id="reassign-task-btn">Переназначить на другого</button>
+              </div>
+              <div id="detail-message" class="status"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    const state = { employees: [], tasks: [], selectedEmployeeId: null, selectedTaskId: null };
+    const employeeSelect = document.getElementById('employee-select');
+    const taskListNode = document.getElementById('task-list');
+    const statsNode = document.getElementById('stats');
+    const detailEmpty = document.getElementById('detail-empty');
+    const taskDetail = document.getElementById('task-detail');
+    const detailMessage = document.getElementById('detail-message');
+    const listStatus = document.getElementById('list-status');
+
+    function setStatus(node, message, isError = false) {
+      node.textContent = message || '';
+      node.classList.toggle('error', !!isError);
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+    }
+
+    function visibleTasks() {
+      const employeeID = Number(state.selectedEmployeeId);
+      return state.tasks.filter(task => task.kind !== 'template' && (!task.assignee_id || task.assignee_id === employeeID));
+    }
+
+    function workflowStatus(task) {
+      if (!task) return '';
+      if (task.assignee_id && task.status === 'new') return 'assigned';
+      return task.status;
+    }
+
+    function statusPillClass(status) {
+      switch (status) {
+        case 'assigned':
+          return 'pill pill-status-assigned';
+        case 'in_progress':
+          return 'pill pill-status-in-progress';
+        case 'done':
+          return 'pill pill-status-done';
+        default:
+          return 'pill pill-status-new';
+      }
+    }
+
+    function formatScheduledAt(value) {
+      if (!value) return '';
+      const parsed = new Date(value);
+      if (Number.isNaN(parsed.getTime())) return value;
+      return parsed.toLocaleString('ru-RU', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+    }
+
+    function taskSortTime(task) {
+      if (task.scheduled_at) {
+        const parsed = new Date(task.scheduled_at);
+        if (!Number.isNaN(parsed.getTime())) return parsed.getTime();
+      }
+      if (task.scheduled_for) {
+        const parsed = new Date(task.scheduled_for + 'T23:59:59');
+        if (!Number.isNaN(parsed.getTime())) return parsed.getTime();
+      }
+      if (task.created_at) {
+        const parsed = new Date(task.created_at);
+        if (!Number.isNaN(parsed.getTime())) return parsed.getTime();
+      }
+      return Number.MAX_SAFE_INTEGER;
+    }
+
+    function sortTasksByNearest(tasks) {
+      return tasks.slice().sort((left, right) => {
+        const diff = taskSortTime(left) - taskSortTime(right);
+        if (diff !== 0) return diff;
+        return left.id - right.id;
+      });
+    }
+
+    function renderEmployeeOptions() {
+      employeeSelect.innerHTML = state.employees.map(e => '<option value="' + e.id + '">' + escapeHtml(e.name) + '</option>').join('');
+      if (!state.selectedEmployeeId && state.employees.length) state.selectedEmployeeId = state.employees[0].id;
+      employeeSelect.value = state.selectedEmployeeId || '';
+    }
+
+    function renderStats() {
+      const tasks = visibleTasks();
+      const stats = {
+        total: tasks.length,
+        open: tasks.filter(t => !t.assignee_id).length,
+        new: tasks.filter(t => workflowStatus(t) === 'new' || workflowStatus(t) === 'assigned').length,
+        in_progress: tasks.filter(t => workflowStatus(t) === 'in_progress').length,
+        done: tasks.filter(t => workflowStatus(t) === 'done').length
+      };
+      statsNode.innerHTML = [
+        ['Всего задач', stats.total],
+        ['Свободные', stats.open],
+        ['Новые', stats.new],
+        ['В работе', stats.in_progress],
+        ['Завершены', stats.done]
+      ].map(item => '<div class="stat"><span>' + item[0] + '</span><strong>' + item[1] + '</strong></div>').join('');
+    }
+
+    function renderTasks() {
+      const tasks = visibleTasks();
+      if (!tasks.length) {
+        taskListNode.innerHTML = '<div class="empty">Для выбранного сотрудника задач пока нет</div>';
+        return;
+      }
+
+      const groups = [
+        ['В работе', sortTasksByNearest(tasks.filter(task => workflowStatus(task) === 'in_progress'))],
+        ['Новые', sortTasksByNearest(tasks.filter(task => workflowStatus(task) === 'new' || workflowStatus(task) === 'assigned'))],
+        ['Завершенные', sortTasksByNearest(tasks.filter(task => workflowStatus(task) === 'done'))]
+      ].filter(group => group[1].length > 0);
+
+      taskListNode.innerHTML = groups.map(group => {
+        const title = group[0];
+        const cards = group[1].map(task => {
+          const selected = task.id === state.selectedTaskId ? ' selected' : '';
+          const ownership = task.assignee_name
+            ? '<span class="pill">назначено: ' + escapeHtml(task.assignee_name) + '</span>'
+            : '<span class="pill">может взять любой сотрудник</span>';
+          const scheduledAt = task.scheduled_at
+            ? '<span class="pill">до: ' + escapeHtml(formatScheduledAt(task.scheduled_at)) + '</span>'
+            : '';
+          const verified = task.admin_verified ? '<span class="pill">проверено админом</span>' : '';
+          return ''
+            + '<article class="task' + selected + '" data-task-id="' + task.id + '">'
+            + '<h3 style="margin:0 0 10px">' + escapeHtml(task.title) + '</h3>'
+            + '<div class="pillbar">'
+            + '<span class="' + statusPillClass(workflowStatus(task)) + '">status: ' + escapeHtml(workflowStatus(task)) + '</span>'
+            + ownership
+            + scheduledAt
+            + verified
+            + '</div>'
+            + '<p>' + escapeHtml(task.description || '') + '</p>'
+            + '</article>';
+        }).join('');
+
+        return ''
+          + '<section class="task-section">'
+          + '<h3 class="task-section-title">' + escapeHtml(title) + '</h3>'
+          + cards
+          + '</section>';
+      }).join('');
+    }
+
+    function renderDetail(task) {
+      if (!task) {
+        detailEmpty.hidden = false;
+        taskDetail.hidden = true;
+        return;
+      }
+
+      const currentEmployeeId = Number(state.selectedEmployeeId);
+      const status = workflowStatus(task);
+      const isOpenTask = !task.assignee_id;
+      const isOwnedByCurrentEmployee = task.assignee_id === currentEmployeeId;
+
+      detailEmpty.hidden = true;
+      taskDetail.hidden = false;
+      document.getElementById('detail-title').textContent = task.title;
+      document.getElementById('detail-description').textContent = task.description || '';
+      document.getElementById('detail-status-view').value = status;
+      document.getElementById('detail-report').value = task.completion_report || '';
+      document.getElementById('detail-meta').innerHTML =
+        '<span class="pill">id: ' + task.id + '</span>' +
+        '<span class="pill">assignee: ' + escapeHtml(task.assignee_name || 'свободна') + '</span>' +
+        (task.scheduled_at ? '<span class="pill">до: ' + escapeHtml(formatScheduledAt(task.scheduled_at)) + '</span>' : '') +
+        '<span class="pill">admin verified: ' + task.admin_verified + '</span>';
+
+      document.getElementById('take-task-btn').hidden = !(isOpenTask || (isOwnedByCurrentEmployee && status === 'assigned'));
+      document.getElementById('complete-task-btn').hidden = !(isOwnedByCurrentEmployee && status === 'in_progress');
+      document.getElementById('reassign-task-btn').hidden = !(isOwnedByCurrentEmployee && (status === 'assigned' || status === 'in_progress'));
+      const reportLabel = document.getElementById('detail-report-label');
+      reportLabel.hidden = status !== 'in_progress';
+      reportLabel.style.display = status === 'in_progress' ? 'grid' : 'none';
+      setStatus(detailMessage, '');
+    }
+
+    async function loadEmployees() {
+      const response = await fetch('/api/v1/employees');
+      state.employees = await response.json();
+      renderEmployeeOptions();
+    }
+
+    async function loadTasks() {
+      setStatus(listStatus, 'Загружаю задачи...');
+      try {
+        const response = await fetch('/api/v1/tasks');
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        state.tasks = await response.json();
+        renderStats();
+        renderTasks();
+        renderDetail(state.tasks.find(t => t.id === state.selectedTaskId));
+        setStatus(listStatus, 'Список обновлен');
+      } catch (error) {
+        setStatus(listStatus, error.message, true);
+      }
+    }
+
+    async function saveTask(task, updates) {
+      const response = await fetch('/api/v1/tasks/' + task.id, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: task.title,
+          description: task.description,
+          status: updates.status,
+          assignee_id: updates.assignee_id,
+          completion_report: updates.completion_report,
+          admin_verified: task.admin_verified,
+          recurrence: task.recurrence || null
+        })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || ('HTTP ' + response.status));
+      return body;
+    }
+
+    employeeSelect.addEventListener('change', () => {
+      state.selectedEmployeeId = Number(employeeSelect.value);
+      state.selectedTaskId = null;
+      renderStats();
+      renderTasks();
+      renderDetail(null);
+    });
+
+    taskListNode.addEventListener('click', event => {
+      const card = event.target.closest('[data-task-id]');
+      if (!card) return;
+      state.selectedTaskId = Number(card.getAttribute('data-task-id'));
+      renderTasks();
+      renderDetail(state.tasks.find(t => t.id === state.selectedTaskId));
+    });
+
+    document.getElementById('take-task-btn').addEventListener('click', async () => {
+      const task = state.tasks.find(t => t.id === state.selectedTaskId);
+      if (!task) return;
+      setStatus(detailMessage, 'Беру задачу в работу...');
+      try {
+        await saveTask(task, {
+          status: 'in_progress',
+          assignee_id: Number(state.selectedEmployeeId),
+          completion_report: task.completion_report || ''
+        });
+        await loadTasks();
+        setStatus(detailMessage, 'Задача назначена тебе');
+      } catch (error) {
+        setStatus(detailMessage, error.message, true);
+      }
+    });
+
+    document.getElementById('complete-task-btn').addEventListener('click', async () => {
+      const task = state.tasks.find(t => t.id === state.selectedTaskId);
+      if (!task) return;
+      const report = document.getElementById('detail-report').value.trim();
+      if (report.length < 5) {
+        setStatus(detailMessage, 'Отчет перед закрытием должен содержать минимум 5 символов', true);
+        return;
+      }
+      setStatus(detailMessage, 'Завершаю задачу...');
+      try {
+        await saveTask(task, {
+          status: 'done',
+          assignee_id: task.assignee_id || Number(state.selectedEmployeeId),
+          completion_report: report
+        });
+        await loadTasks();
+        setStatus(detailMessage, 'Статус обновлен');
+      } catch (error) {
+        setStatus(detailMessage, error.message, true);
+      }
+    });
+
+    document.getElementById('reassign-task-btn').addEventListener('click', async () => {
+      const task = state.tasks.find(t => t.id === state.selectedTaskId);
+      if (!task) return;
+      setStatus(detailMessage, 'Возвращаю задачу в общий пул...');
+      try {
+        await saveTask(task, {
+          status: 'new',
+          assignee_id: null,
+          completion_report: ''
+        });
+        state.selectedTaskId = null;
+        await loadTasks();
+        renderDetail(null);
+      } catch (error) {
+        setStatus(detailMessage, error.message, true);
+      }
+    });
+
+    document.getElementById('reload-btn').addEventListener('click', loadTasks);
+    Promise.all([loadEmployees(), loadTasks()]);
+  </script>
+</body>
+</html>
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\docs\handler.go
+Размер: 2,961 байт
+────────────────────────────────────────────────────────────────────────────────
+package docs
+
+import (
+	"embed"
+	"net/http"
+)
+
+//go:embed openapi.json demo_admin.html demo_employee.html
+var assets embed.FS
+
+type Handler struct {
+	spec         []byte
+	adminDemo    []byte
+	employeeDemo []byte
+}
+
+func NewHandler() *Handler {
+	spec, err := assets.ReadFile("openapi.json")
+	if err != nil {
+		panic(err)
+	}
+	adminDemo, err := assets.ReadFile("demo_admin.html")
+	if err != nil {
+		panic(err)
+	}
+	employeeDemo, err := assets.ReadFile("demo_employee.html")
+	if err != nil {
+		panic(err)
+	}
+
+	return &Handler{
+		spec:         spec,
+		adminDemo:    adminDemo,
+		employeeDemo: employeeDemo,
+	}
+}
+
+func (h *Handler) ServeSpec(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(h.spec)
+}
+
+func (h *Handler) ServeUI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(swaggerUIHTML))
+}
+
+func (h *Handler) RedirectToUI(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "/swagger/", http.StatusMovedPermanently)
+}
+
+func (h *Handler) ServeDemo(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(h.adminDemo)
+}
+
+func (h *Handler) RedirectToDemo(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "/demo/", http.StatusMovedPermanently)
+}
+
+func (h *Handler) ServeEmployeeDemo(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(h.employeeDemo)
+}
+
+func (h *Handler) RedirectToEmployeeDemo(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "/employee-demo/", http.StatusMovedPermanently)
+}
+
+var swaggerUIHTML = []byte(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Task Service Swagger</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+  <style>
+    body { margin: 0; background: #f6f7fb; }
+    #swagger-ui { max-width: 1440px; margin: 0 auto; }
+  </style>
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js" crossorigin></script>
+  <script>
+    window.onload = function() {
+      window.ui = SwaggerUIBundle({
+        url: '/swagger/openapi.json',
+        dom_id: '#swagger-ui',
+        deepLinking: true,
+        presets: [SwaggerUIBundle.presets.apis],
+        layout: 'BaseLayout'
+      });
+    };
+  </script>
+</body>
+</html>`)
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\docs\openapi.json
+Размер: 8,412 байт
+────────────────────────────────────────────────────────────────────────────────
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Task Service API",
+    "version": "1.2.0",
+    "description": "CRUD API for tasks with recurring schedule support, schedule activation states, and configurable generation windows."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8080"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Tasks",
+      "description": "Operations with tasks"
+    }
+  ],
+  "paths": {
+    "/api/v1/tasks": {
+      "get": {
+        "tags": ["Tasks"],
+        "summary": "List tasks",
+        "responses": {
+          "200": {
+            "description": "Task list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/Task" }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["Tasks"],
+        "summary": "Create task",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateTaskRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created task",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Task" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/api/v1/tasks/{id}": {
+      "get": {
+        "tags": ["Tasks"],
+        "summary": "Get task by ID",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Task",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Task" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "put": {
+        "tags": ["Tasks"],
+        "summary": "Update task",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/UpdateTaskRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated task",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Task" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["Tasks"],
+        "summary": "Delete task",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "responses": {
+          "204": { "description": "Deleted" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    }
+  },
+  "components": {
+    "responses": {
+      "BadRequest": {
+        "description": "Bad request",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Resource not found",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "CreateTaskRequest": {
+        "type": "object",
+        "required": ["title"],
+        "properties": {
+          "title": {
+            "type": "string",
+            "example": "Call patients"
+          },
+          "description": {
+            "type": "string",
+            "example": "Daily reminder calls before admission"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["new", "in_progress", "done"],
+            "example": "new"
+          },
+          "recurrence": {
+            "$ref": "#/components/schemas/TaskRecurrence"
+          }
+        }
+      },
+      "UpdateTaskRequest": {
+        "type": "object",
+        "required": ["title", "status"],
+        "properties": {
+          "title": {
+            "type": "string",
+            "example": "Call patients"
+          },
+          "description": {
+            "type": "string",
+            "example": "Daily reminder calls before admission"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["new", "in_progress", "done"],
+            "example": "in_progress"
+          },
+          "recurrence": {
+            "$ref": "#/components/schemas/TaskRecurrence"
+          }
+        }
+      },
+      "TaskRecurrence": {
+        "type": "object",
+        "required": ["type"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["daily", "monthly", "specific_dates", "odd_days", "even_days"],
+            "example": "daily"
+          },
+          "every_n_days": {
+            "type": "integer",
+            "minimum": 1,
+            "example": 2
+          },
+          "day_of_month": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 31,
+            "example": 31
+          },
+          "dates": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "date"
+            },
+            "example": ["2026-04-08", "2026-04-20"]
+          },
+          "schedule_status": {
+            "type": "string",
+            "enum": ["active", "paused", "finished"],
+            "example": "active"
+          },
+          "generation_window_unit": {
+            "type": "string",
+            "enum": ["days", "months"],
+            "example": "days"
+          },
+          "generation_window_value": {
+            "type": "integer",
+            "minimum": 1,
+            "example": 30
+          }
+        }
+      },
+      "Task": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "format": "int64", "example": 1 },
+          "title": { "type": "string", "example": "Call patients" },
+          "description": {
+            "type": "string",
+            "example": "Daily reminder calls before admission"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["new", "in_progress", "done"],
+            "example": "new"
+          },
+          "kind": {
+            "type": "string",
+            "enum": ["task", "template"],
+            "example": "template"
+          },
+          "template_id": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "example": 1
+          },
+          "scheduled_for": {
+            "type": "string",
+            "format": "date",
+            "nullable": true,
+            "example": "2026-04-08"
+          },
+          "recurrence": {
+            "allOf": [{ "$ref": "#/components/schemas/TaskRecurrence" }],
+            "nullable": true
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-04-07T06:00:00Z"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-04-07T06:00:00Z"
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": { "type": "string", "example": "invalid task input: day_of_month must be in range 1..31" }
+        }
+      }
+    }
+  }
+}
+
+
+================================================================================
+📁 ПАПКА: ainurgo/internal\transport\http\handlers/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\handlers\dto.go
+Размер: 5,062 байт
+────────────────────────────────────────────────────────────────────────────────
+package handlers
+
+import (
+	"time"
+
+	employeedomain "example.com/taskservice/internal/domain/employee"
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type taskMutationDTO struct {
+	Title            string             `json:"title"`
+	Description      string             `json:"description"`
+	Status           taskdomain.Status  `json:"status"`
+	ScheduledAt      string             `json:"scheduled_at,omitempty"`
+	AssigneeID       *int64             `json:"assignee_id,omitempty"`
+	CompletionReport string             `json:"completion_report,omitempty"`
+	AdminVerified    bool               `json:"admin_verified"`
+	Recurrence       *taskRecurrenceDTO `json:"recurrence,omitempty"`
+}
+
+type taskDTO struct {
+	ID               int64              `json:"id"`
+	Title            string             `json:"title"`
+	Description      string             `json:"description"`
+	Status           taskdomain.Status  `json:"status"`
+	Kind             taskdomain.Kind    `json:"kind"`
+	TemplateID       *int64             `json:"template_id,omitempty"`
+	ScheduledFor     string             `json:"scheduled_for,omitempty"`
+	ScheduledAt      string             `json:"scheduled_at,omitempty"`
+	AssigneeID       *int64             `json:"assignee_id,omitempty"`
+	AssigneeName     string             `json:"assignee_name,omitempty"`
+	CompletionReport string             `json:"completion_report,omitempty"`
+	AdminVerified    bool               `json:"admin_verified"`
+	Recurrence       *taskRecurrenceDTO `json:"recurrence,omitempty"`
+	CreatedAt        time.Time          `json:"created_at"`
+	UpdatedAt        time.Time          `json:"updated_at"`
+}
+
+type employeeDTO struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+}
+
+type taskRecurrenceDTO struct {
+	Type                  taskdomain.RecurrenceType       `json:"type"`
+	EveryNDays            int                             `json:"every_n_days,omitempty"`
+	DayOfMonth            int                             `json:"day_of_month,omitempty"`
+	Dates                 []string                        `json:"dates,omitempty"`
+	TimeOfDay             string                          `json:"time_of_day,omitempty"`
+	ScheduleStatus        taskdomain.ScheduleStatus       `json:"schedule_status,omitempty"`
+	GenerationWindowUnit  taskdomain.GenerationWindowUnit `json:"generation_window_unit,omitempty"`
+	GenerationWindowValue int                             `json:"generation_window_value,omitempty"`
+}
+
+func newTaskDTO(task *taskdomain.Task) taskDTO {
+	scheduledFor := ""
+	if task.ScheduledFor != nil {
+		scheduledFor = task.ScheduledFor.Format(time.DateOnly)
+	}
+	scheduledAt := ""
+	if task.ScheduledAt != nil {
+		scheduledAt = task.ScheduledAt.UTC().Format("2006-01-02T15:04")
+	}
+
+	return taskDTO{
+		ID:               task.ID,
+		Title:            task.Title,
+		Description:      task.Description,
+		Status:           task.Status,
+		Kind:             task.Kind,
+		TemplateID:       task.TemplateID,
+		ScheduledFor:     scheduledFor,
+		ScheduledAt:      scheduledAt,
+		AssigneeID:       task.AssigneeID,
+		AssigneeName:     task.AssigneeName,
+		CompletionReport: task.CompletionReport,
+		AdminVerified:    task.AdminVerified,
+		Recurrence:       newRecurrenceDTO(task.Recurrence),
+		CreatedAt:        task.CreatedAt,
+		UpdatedAt:        task.UpdatedAt,
+	}
+}
+
+func newEmployeeDTO(employee employeedomain.Employee) employeeDTO {
+	return employeeDTO{ID: employee.ID, Name: employee.Name}
+}
+
+func newRecurrenceDTO(recurrence *taskdomain.Recurrence) *taskRecurrenceDTO {
+	if recurrence == nil {
+		return nil
+	}
+
+	dto := &taskRecurrenceDTO{
+		Type:                  recurrence.Type,
+		EveryNDays:            recurrence.EveryNDays,
+		DayOfMonth:            recurrence.DayOfMonth,
+		TimeOfDay:             recurrence.TimeOfDay,
+		ScheduleStatus:        recurrence.ScheduleStatus,
+		GenerationWindowUnit:  recurrence.GenerationWindowUnit,
+		GenerationWindowValue: recurrence.GenerationWindowValue,
+	}
+	if len(recurrence.Dates) > 0 {
+		dto.Dates = make([]string, 0, len(recurrence.Dates))
+		for _, date := range recurrence.Dates {
+			dto.Dates = append(dto.Dates, date.Format(time.DateOnly))
+		}
+	}
+
+	return dto
+}
+
+func (dto *taskRecurrenceDTO) toDomain() (*taskdomain.Recurrence, error) {
+	if dto == nil {
+		return nil, nil
+	}
+
+	recurrence := &taskdomain.Recurrence{
+		Type:                  dto.Type,
+		EveryNDays:            dto.EveryNDays,
+		DayOfMonth:            dto.DayOfMonth,
+		TimeOfDay:             dto.TimeOfDay,
+		ScheduleStatus:        dto.ScheduleStatus,
+		GenerationWindowUnit:  dto.GenerationWindowUnit,
+		GenerationWindowValue: dto.GenerationWindowValue,
+	}
+	if len(dto.Dates) > 0 {
+		recurrence.Dates = make([]time.Time, 0, len(dto.Dates))
+		for _, raw := range dto.Dates {
+			date, err := time.Parse(time.DateOnly, raw)
+			if err != nil {
+				return nil, err
+			}
+
+			recurrence.Dates = append(recurrence.Dates, date.UTC())
+		}
+	}
+
+	return recurrence, nil
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\handlers\task_handler.go
+Размер: 5,573 байт
+────────────────────────────────────────────────────────────────────────────────
+package handlers
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/gorilla/mux"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+	taskusecase "example.com/taskservice/internal/usecase/task"
+)
+
+type TaskHandler struct {
+	usecase taskusecase.Usecase
+}
+
+func NewTaskHandler(usecase taskusecase.Usecase) *TaskHandler {
+	return &TaskHandler{usecase: usecase}
+}
+
+func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
+	var req taskMutationDTO
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	recurrence, err := req.Recurrence.toDomain()
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	scheduledAt, err := parseOptionalDateTime(req.ScheduledAt)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	created, err := h.usecase.Create(r.Context(), taskusecase.CreateInput{
+		Title:            req.Title,
+		Description:      req.Description,
+		Status:           req.Status,
+		ScheduledAt:      scheduledAt,
+		AssigneeID:       req.AssigneeID,
+		CompletionReport: req.CompletionReport,
+		AdminVerified:    req.AdminVerified,
+		Recurrence:       recurrence,
+	})
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, newTaskDTO(created))
+}
+
+func (h *TaskHandler) GetByID(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	task, err := h.usecase.GetByID(r.Context(), id)
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, newTaskDTO(task))
+}
+
+func (h *TaskHandler) Update(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	var req taskMutationDTO
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	recurrence, err := req.Recurrence.toDomain()
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	scheduledAt, err := parseOptionalDateTime(req.ScheduledAt)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	updated, err := h.usecase.Update(r.Context(), id, taskusecase.UpdateInput{
+		Title:            req.Title,
+		Description:      req.Description,
+		Status:           req.Status,
+		ScheduledAt:      scheduledAt,
+		AssigneeID:       req.AssigneeID,
+		CompletionReport: req.CompletionReport,
+		AdminVerified:    req.AdminVerified,
+		Recurrence:       recurrence,
+	})
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, newTaskDTO(updated))
+}
+
+func (h *TaskHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	if err := h.usecase.Delete(r.Context(), id); err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
+	tasks, err := h.usecase.List(r.Context())
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	response := make([]taskDTO, 0, len(tasks))
+	for i := range tasks {
+		response = append(response, newTaskDTO(&tasks[i]))
+	}
+
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (h *TaskHandler) ListEmployees(w http.ResponseWriter, r *http.Request) {
+	employees, err := h.usecase.ListEmployees(r.Context())
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	response := make([]employeeDTO, 0, len(employees))
+	for _, employee := range employees {
+		response = append(response, newEmployeeDTO(employee))
+	}
+
+	writeJSON(w, http.StatusOK, response)
+}
+
+func getIDFromRequest(r *http.Request) (int64, error) {
+	rawID := mux.Vars(r)["id"]
+	if rawID == "" {
+		return 0, errors.New("missing task id")
+	}
+
+	id, err := strconv.ParseInt(rawID, 10, 64)
+	if err != nil {
+		return 0, errors.New("invalid task id")
+	}
+
+	if id <= 0 {
+		return 0, errors.New("invalid task id")
+	}
+
+	return id, nil
+}
+
+func decodeJSON(r *http.Request, dst any) error {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+
+	if err := decoder.Decode(dst); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func parseOptionalDateTime(raw string) (*time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+
+	layouts := []string{
+		time.RFC3339,
+		"2006-01-02T15:04",
+		"2006-01-02 15:04",
+	}
+	for _, layout := range layouts {
+		if parsed, err := time.Parse(layout, raw); err == nil {
+			value := parsed.UTC()
+			return &value, nil
+		}
+	}
+
+	return nil, errors.New("invalid scheduled_at")
+}
+
+func writeUsecaseError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, taskdomain.ErrNotFound):
+		writeError(w, http.StatusNotFound, err)
+	case errors.Is(err, taskusecase.ErrInvalidInput):
+		writeError(w, http.StatusBadRequest, err)
+	default:
+		writeError(w, http.StatusInternalServerError, err)
+	}
+}
+
+func writeError(w http.ResponseWriter, status int, err error) {
+	writeJSON(w, status, map[string]string{
+		"error": err.Error(),
+	})
+}
+
+func writeJSON(w http.ResponseWriter, status int, payload any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+
+================================================================================
+📁 ПАПКА: ainurgo/internal\usecase/
+================================================================================
+
+================================================================================
+📁 ПАПКА: ainurgo/internal\usecase\task/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\task\errors.go
+Размер: 91 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import "errors"
+
+var ErrInvalidInput = errors.New("invalid task input")
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\task\ports.go
+Размер: 1,875 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import (
+	"context"
+	"time"
+
+	employeedomain "example.com/taskservice/internal/domain/employee"
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type Repository interface {
+	Create(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error)
+	GetByID(ctx context.Context, id int64) (*taskdomain.Task, error)
+	Update(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error)
+	Delete(ctx context.Context, id int64) error
+	List(ctx context.Context) ([]taskdomain.Task, error)
+	ListRecurringTemplates(ctx context.Context) ([]taskdomain.Task, error)
+	ListGeneratedDates(ctx context.Context, templateID int64) ([]time.Time, error)
+	CreateGenerated(ctx context.Context, tasks []taskdomain.Task) error
+	ListEmployees(ctx context.Context) ([]employeedomain.Employee, error)
+	EmployeeExists(ctx context.Context, employeeID int64) (bool, error)
+}
+
+type Usecase interface {
+	Create(ctx context.Context, input CreateInput) (*taskdomain.Task, error)
+	GetByID(ctx context.Context, id int64) (*taskdomain.Task, error)
+	Update(ctx context.Context, id int64, input UpdateInput) (*taskdomain.Task, error)
+	Delete(ctx context.Context, id int64) error
+	List(ctx context.Context) ([]taskdomain.Task, error)
+	ListEmployees(ctx context.Context) ([]employeedomain.Employee, error)
+}
+
+type CreateInput struct {
+	Title            string
+	Description      string
+	Status           taskdomain.Status
+	ScheduledAt      *time.Time
+	AssigneeID       *int64
+	CompletionReport string
+	AdminVerified    bool
+	Recurrence       *taskdomain.Recurrence
+}
+
+type UpdateInput struct {
+	Title            string
+	Description      string
+	Status           taskdomain.Status
+	ScheduledAt      *time.Time
+	AssigneeID       *int64
+	CompletionReport string
+	AdminVerified    bool
+	Recurrence       *taskdomain.Recurrence
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\task\service.go
+Размер: 15,111 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import (
+	"context"
+	"fmt"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	employeedomain "example.com/taskservice/internal/domain/employee"
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type Service struct {
+	repo Repository
+	now  func() time.Time
+}
+
+func NewService(repo Repository) *Service {
+	return &Service{
+		repo: repo,
+		now:  func() time.Time { return time.Now().UTC() },
+	}
+}
+
+func (s *Service) Create(ctx context.Context, input CreateInput) (*taskdomain.Task, error) {
+	normalized, err := s.validateCreateInput(ctx, input)
+	if err != nil {
+		return nil, err
+	}
+
+	now := s.now()
+	model := &taskdomain.Task{
+		Title:            normalized.Title,
+		Description:      normalized.Description,
+		Status:           normalized.Status,
+		Kind:             taskKindFromRecurrence(normalized.Recurrence),
+		ScheduledAt:      normalized.ScheduledAt,
+		AssigneeID:       normalized.AssigneeID,
+		CompletionReport: normalized.CompletionReport,
+		AdminVerified:    normalized.AdminVerified,
+		Recurrence:       normalized.Recurrence,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+
+	created, err := s.repo.Create(ctx, model)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.syncTemplate(ctx, created); err != nil {
+		return nil, err
+	}
+
+	return created, nil
+}
+
+func (s *Service) GetByID(ctx context.Context, id int64) (*taskdomain.Task, error) {
+	if id <= 0 {
+		return nil, fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+	}
+
+	if err := s.syncRecurringTasks(ctx); err != nil {
+		return nil, err
+	}
+
+	return s.repo.GetByID(ctx, id)
+}
+
+func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (*taskdomain.Task, error) {
+	if id <= 0 {
+		return nil, fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+	}
+
+	normalized, err := s.validateUpdateInput(ctx, input)
+	if err != nil {
+		return nil, err
+	}
+
+	model := &taskdomain.Task{
+		ID:               id,
+		Title:            normalized.Title,
+		Description:      normalized.Description,
+		Status:           normalized.Status,
+		Kind:             taskKindFromRecurrence(normalized.Recurrence),
+		ScheduledAt:      normalized.ScheduledAt,
+		AssigneeID:       normalized.AssigneeID,
+		CompletionReport: normalized.CompletionReport,
+		AdminVerified:    normalized.AdminVerified,
+		Recurrence:       normalized.Recurrence,
+		UpdatedAt:        s.now(),
+	}
+
+	updated, err := s.repo.Update(ctx, model)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.syncTemplate(ctx, updated); err != nil {
+		return nil, err
+	}
+
+	return updated, nil
+}
+
+func (s *Service) Delete(ctx context.Context, id int64) error {
+	if id <= 0 {
+		return fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+	}
+
+	return s.repo.Delete(ctx, id)
+}
+
+func (s *Service) List(ctx context.Context) ([]taskdomain.Task, error) {
+	if err := s.syncRecurringTasks(ctx); err != nil {
+		return nil, err
+	}
+
+	return s.repo.List(ctx)
+}
+
+func (s *Service) ListEmployees(ctx context.Context) ([]employeedomain.Employee, error) {
+	return s.repo.ListEmployees(ctx)
+}
+
+func (s *Service) validateCreateInput(ctx context.Context, input CreateInput) (CreateInput, error) {
+	input.Title = strings.TrimSpace(input.Title)
+	input.Description = strings.TrimSpace(input.Description)
+	input.CompletionReport = strings.TrimSpace(input.CompletionReport)
+	input.ScheduledAt = normalizeScheduledAt(input.ScheduledAt)
+
+	if input.Title == "" {
+		return CreateInput{}, fmt.Errorf("%w: title is required", ErrInvalidInput)
+	}
+
+	if input.Status == "" {
+		input.Status = taskdomain.StatusNew
+	}
+
+	input.Status = normalizeAssignmentStatus(input.Status, input.AssigneeID)
+
+	if !input.Status.Valid() {
+		return CreateInput{}, fmt.Errorf("%w: invalid status", ErrInvalidInput)
+	}
+
+	recurrence, err := normalizeRecurrence(input.Recurrence, input.ScheduledAt)
+	if err != nil {
+		return CreateInput{}, err
+	}
+
+	if err := s.validateAssignee(ctx, input.AssigneeID); err != nil {
+		return CreateInput{}, err
+	}
+
+	if err := validateCompletionState(input.Status, input.CompletionReport, input.AdminVerified); err != nil {
+		return CreateInput{}, err
+	}
+
+	input.Recurrence = recurrence
+
+	return input, nil
+}
+
+func (s *Service) validateUpdateInput(ctx context.Context, input UpdateInput) (UpdateInput, error) {
+	input.Title = strings.TrimSpace(input.Title)
+	input.Description = strings.TrimSpace(input.Description)
+	input.CompletionReport = strings.TrimSpace(input.CompletionReport)
+	input.ScheduledAt = normalizeScheduledAt(input.ScheduledAt)
+
+	if input.Title == "" {
+		return UpdateInput{}, fmt.Errorf("%w: title is required", ErrInvalidInput)
+	}
+
+	input.Status = normalizeAssignmentStatus(input.Status, input.AssigneeID)
+
+	if !input.Status.Valid() {
+		return UpdateInput{}, fmt.Errorf("%w: invalid status", ErrInvalidInput)
+	}
+
+	recurrence, err := normalizeRecurrence(input.Recurrence, input.ScheduledAt)
+	if err != nil {
+		return UpdateInput{}, err
+	}
+
+	if err := s.validateAssignee(ctx, input.AssigneeID); err != nil {
+		return UpdateInput{}, err
+	}
+
+	if err := validateCompletionState(input.Status, input.CompletionReport, input.AdminVerified); err != nil {
+		return UpdateInput{}, err
+	}
+
+	input.Recurrence = recurrence
+
+	return input, nil
+}
+
+func validateCompletionState(status taskdomain.Status, completionReport string, _ bool) error {
+	if status != taskdomain.StatusDone {
+		return nil
+	}
+	if len([]rune(strings.TrimSpace(completionReport))) < 5 {
+		return fmt.Errorf("%w: completion_report must contain at least 5 characters before closing task", ErrInvalidInput)
+	}
+
+	return nil
+}
+
+func normalizeAssignmentStatus(status taskdomain.Status, assigneeID *int64) taskdomain.Status {
+	if assigneeID == nil {
+		if status == taskdomain.StatusAssigned {
+			return taskdomain.StatusNew
+		}
+		return status
+	}
+
+	if status == taskdomain.StatusNew {
+		return taskdomain.StatusAssigned
+	}
+
+	return status
+}
+
+func (s *Service) validateAssignee(ctx context.Context, assigneeID *int64) error {
+	if assigneeID == nil {
+		return nil
+	}
+	if *assigneeID <= 0 {
+		return fmt.Errorf("%w: assignee_id must be positive", ErrInvalidInput)
+	}
+
+	exists, err := s.repo.EmployeeExists(ctx, *assigneeID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return fmt.Errorf("%w: assignee not found", ErrInvalidInput)
+	}
+
+	return nil
+}
+
+func normalizeRecurrence(input *taskdomain.Recurrence, scheduledAt *time.Time) (*taskdomain.Recurrence, error) {
+	if input == nil || input.Type == "" {
+		return nil, nil
+	}
+
+	if !input.Type.Valid() {
+		return nil, fmt.Errorf("%w: invalid recurrence type", ErrInvalidInput)
+	}
+
+	recurrence := &taskdomain.Recurrence{
+		Type:                  input.Type,
+		TimeOfDay:             input.TimeOfDay,
+		ScheduleStatus:        input.ScheduleStatus,
+		GenerationWindowUnit:  input.GenerationWindowUnit,
+		GenerationWindowValue: input.GenerationWindowValue,
+	}
+	if recurrence.TimeOfDay == "" && scheduledAt != nil {
+		recurrence.TimeOfDay = scheduledAt.UTC().Format("15:04")
+	}
+	if recurrence.TimeOfDay == "" {
+		recurrence.TimeOfDay = "09:00"
+	}
+	if _, err := time.Parse("15:04", recurrence.TimeOfDay); err != nil {
+		return nil, fmt.Errorf("%w: invalid time_of_day", ErrInvalidInput)
+	}
+
+	if recurrence.ScheduleStatus == "" {
+		recurrence.ScheduleStatus = taskdomain.ScheduleStatusActive
+	}
+	if !recurrence.ScheduleStatus.Valid() {
+		return nil, fmt.Errorf("%w: invalid schedule_status", ErrInvalidInput)
+	}
+
+	if recurrence.GenerationWindowUnit == "" {
+		recurrence.GenerationWindowUnit = taskdomain.GenerationWindowDays
+	}
+	if !recurrence.GenerationWindowUnit.Valid() {
+		return nil, fmt.Errorf("%w: invalid generation_window_unit", ErrInvalidInput)
+	}
+
+	if recurrence.GenerationWindowValue <= 0 {
+		recurrence.GenerationWindowValue = 30
+	}
+	if recurrence.GenerationWindowValue <= 0 {
+		return nil, fmt.Errorf("%w: generation_window_value must be greater than 0", ErrInvalidInput)
+	}
+	switch input.Type {
+	case taskdomain.RecurrenceDaily:
+		if input.EveryNDays <= 0 {
+			return nil, fmt.Errorf("%w: every_n_days must be greater than 0", ErrInvalidInput)
+		}
+		recurrence.EveryNDays = input.EveryNDays
+	case taskdomain.RecurrenceMonthly:
+		if input.DayOfMonth < 1 || input.DayOfMonth > 31 {
+			return nil, fmt.Errorf("%w: day_of_month must be in range 1..31", ErrInvalidInput)
+		}
+		recurrence.DayOfMonth = input.DayOfMonth
+	case taskdomain.RecurrenceSpecificDates:
+		if len(input.Dates) == 0 {
+			return nil, fmt.Errorf("%w: at least one date is required", ErrInvalidInput)
+		}
+		recurrence.Dates = normalizeDates(input.Dates)
+	case taskdomain.RecurrenceOddDays, taskdomain.RecurrenceEvenDays:
+	default:
+		return nil, fmt.Errorf("%w: invalid recurrence type", ErrInvalidInput)
+	}
+
+	return recurrence, nil
+}
+
+func normalizeDates(input []time.Time) []time.Time {
+	unique := make(map[string]time.Time, len(input))
+	for _, date := range input {
+		normalized := startOfDay(date)
+		unique[normalized.Format(time.DateOnly)] = normalized
+	}
+
+	dates := make([]time.Time, 0, len(unique))
+	for _, date := range unique {
+		dates = append(dates, date)
+	}
+	slices.SortFunc(dates, func(a, b time.Time) int {
+		return a.Compare(b)
+	})
+
+	return dates
+}
+
+func taskKindFromRecurrence(recurrence *taskdomain.Recurrence) taskdomain.Kind {
+	if recurrence == nil {
+		return taskdomain.KindTask
+	}
+
+	return taskdomain.KindTemplate
+}
+
+func (s *Service) syncRecurringTasks(ctx context.Context) error {
+	templates, err := s.repo.ListRecurringTemplates(ctx)
+	if err != nil {
+		return err
+	}
+
+	for i := range templates {
+		if err := s.syncTemplate(ctx, &templates[i]); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (s *Service) syncTemplate(ctx context.Context, template *taskdomain.Task) error {
+	if template == nil || template.Kind != taskdomain.KindTemplate || template.Recurrence == nil {
+		return nil
+	}
+	if template.Recurrence.ScheduleStatus != "" && template.Recurrence.ScheduleStatus != taskdomain.ScheduleStatusActive {
+		return nil
+	}
+
+	existingDates, err := s.repo.ListGeneratedDates(ctx, template.ID)
+	if err != nil {
+		return err
+	}
+
+	existing := make(map[string]struct{}, len(existingDates))
+	for _, date := range existingDates {
+		existing[startOfDay(date).Format(time.DateOnly)] = struct{}{}
+	}
+
+	now := s.now()
+	dates := materializeDates(template, now)
+	generated := make([]taskdomain.Task, 0, len(dates))
+	for _, date := range dates {
+		key := date.Format(time.DateOnly)
+		if _, ok := existing[key]; ok {
+			continue
+		}
+
+		scheduledFor := date
+		templateID := template.ID
+		scheduledAt := combineDateAndTime(date, template.Recurrence.TimeOfDay)
+		generated = append(generated, taskdomain.Task{
+			Title:            template.Title,
+			Description:      template.Description,
+			Status:           normalizeAssignmentStatus(taskdomain.StatusNew, template.AssigneeID),
+			Kind:             taskdomain.KindTask,
+			TemplateID:       &templateID,
+			ScheduledFor:     &scheduledFor,
+			ScheduledAt:      &scheduledAt,
+			AssigneeID:       template.AssigneeID,
+			CompletionReport: "",
+			AdminVerified:    false,
+			CreatedAt:        now,
+			UpdatedAt:        now,
+		})
+	}
+
+	if len(generated) == 0 {
+		return nil
+	}
+
+	return s.repo.CreateGenerated(ctx, generated)
+}
+
+func materializeDates(template *taskdomain.Task, now time.Time) []time.Time {
+	if template == nil || template.Recurrence == nil {
+		return nil
+	}
+	if template.Recurrence.ScheduleStatus != "" && template.Recurrence.ScheduleStatus != taskdomain.ScheduleStatusActive {
+		return nil
+	}
+
+	startSource := template.CreatedAt
+	if template.ScheduledAt != nil {
+		startSource = *template.ScheduledAt
+	}
+	start := startOfDay(startSource)
+	end := generationWindowEnd(startOfDay(now), template.Recurrence)
+	if start.After(end) {
+		return nil
+	}
+
+	switch template.Recurrence.Type {
+	case taskdomain.RecurrenceDaily:
+		return dailyDates(start, end, template.Recurrence.EveryNDays)
+	case taskdomain.RecurrenceMonthly:
+		return monthlyDates(start, end, template.Recurrence.DayOfMonth)
+	case taskdomain.RecurrenceSpecificDates:
+		return specificDates(start, end, template.Recurrence.Dates)
+	case taskdomain.RecurrenceOddDays:
+		return parityDates(start, end, 1)
+	case taskdomain.RecurrenceEvenDays:
+		return parityDates(start, end, 0)
+	default:
+		return nil
+	}
+}
+
+func generationWindowEnd(start time.Time, recurrence *taskdomain.Recurrence) time.Time {
+	if recurrence == nil {
+		return start
+	}
+
+	windowValue := recurrence.GenerationWindowValue
+	if windowValue <= 0 {
+		windowValue = 30
+	}
+
+	switch recurrence.GenerationWindowUnit {
+	case taskdomain.GenerationWindowMonths:
+		return start.AddDate(0, windowValue, 0)
+	default:
+		return start.AddDate(0, 0, windowValue)
+	}
+}
+
+func dailyDates(start, end time.Time, everyNDays int) []time.Time {
+	dates := make([]time.Time, 0)
+	for date, step := start, 0; !date.After(end); date, step = date.AddDate(0, 0, 1), step+1 {
+		if step%everyNDays == 0 {
+			dates = append(dates, date)
+		}
+	}
+
+	return dates
+}
+
+func monthlyDates(start, end time.Time, dayOfMonth int) []time.Time {
+	dates := make([]time.Time, 0)
+	for month := time.Date(start.Year(), start.Month(), 1, 0, 0, 0, 0, time.UTC); !month.After(end); month = month.AddDate(0, 1, 0) {
+		lastDay := time.Date(month.Year(), month.Month()+1, 0, 0, 0, 0, 0, time.UTC).Day()
+		if dayOfMonth > lastDay {
+			continue
+		}
+
+		candidate := time.Date(month.Year(), month.Month(), dayOfMonth, 0, 0, 0, 0, time.UTC)
+		if candidate.Before(start) || candidate.After(end) {
+			continue
+		}
+
+		dates = append(dates, candidate)
+	}
+
+	return dates
+}
+
+func specificDates(start, end time.Time, input []time.Time) []time.Time {
+	dates := make([]time.Time, 0, len(input))
+	for _, date := range input {
+		normalized := startOfDay(date)
+		if normalized.Before(start) || normalized.After(end) {
+			continue
+		}
+
+		dates = append(dates, normalized)
+	}
+
+	return dates
+}
+
+func parityDates(start, end time.Time, parity int) []time.Time {
+	dates := make([]time.Time, 0)
+	for date := start; !date.After(end); date = date.AddDate(0, 0, 1) {
+		if date.Day()%2 == parity {
+			dates = append(dates, date)
+		}
+	}
+
+	return dates
+}
+
+func startOfDay(input time.Time) time.Time {
+	year, month, day := input.UTC().Date()
+	return time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
+}
+
+func normalizeScheduledAt(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	normalized := value.UTC().Truncate(time.Minute)
+	return &normalized
+}
+
+func combineDateAndTime(date time.Time, hhmm string) time.Time {
+	parts := strings.Split(hhmm, ":")
+	if len(parts) != 2 {
+		return startOfDay(date)
+	}
+	hour, _ := strconv.Atoi(parts[0])
+	minute, _ := strconv.Atoi(parts[1])
+	return time.Date(date.Year(), date.Month(), date.Day(), hour, minute, 0, 0, time.UTC)
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\task\service_test.go
+Размер: 2,604 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import (
+	"testing"
+	"time"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+func TestNormalizeRecurrence(t *testing.T) {
+	t.Parallel()
+
+	recurrence, err := normalizeRecurrence(&taskdomain.Recurrence{
+		Type:  taskdomain.RecurrenceSpecificDates,
+		Dates: []time.Time{time.Date(2026, 4, 10, 15, 0, 0, 0, time.UTC), time.Date(2026, 4, 10, 2, 0, 0, 0, time.UTC)},
+	})
+	if err != nil {
+		t.Fatalf("normalizeRecurrence() error = %v", err)
+	}
+
+	if got, want := len(recurrence.Dates), 1; got != want {
+		t.Fatalf("normalizeRecurrence() len = %d, want %d", got, want)
+	}
+}
+
+func TestMaterializeDates(t *testing.T) {
+	t.Parallel()
+
+	template := &taskdomain.Task{
+		CreatedAt: time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC),
+		Recurrence: &taskdomain.Recurrence{
+			Type:                  taskdomain.RecurrenceDaily,
+			EveryNDays:            2,
+			ScheduleStatus:        taskdomain.ScheduleStatusActive,
+			GenerationWindowUnit:  taskdomain.GenerationWindowDays,
+			GenerationWindowValue: 6,
+		},
+	}
+
+	got := materializeDates(template, time.Date(2026, 4, 7, 8, 0, 0, 0, time.UTC))
+	want := []string{"2026-04-01", "2026-04-03", "2026-04-05", "2026-04-07", "2026-04-09", "2026-04-11", "2026-04-13"}
+	if len(got) != len(want) {
+		t.Fatalf("materializeDates() len = %d, want %d", len(got), len(want))
+	}
+
+	for i := range want {
+		if got[i].Format(time.DateOnly) != want[i] {
+			t.Fatalf("materializeDates()[%d] = %s, want %s", i, got[i].Format(time.DateOnly), want[i])
+		}
+	}
+}
+
+func TestMaterializeDatesPausedTemplate(t *testing.T) {
+	t.Parallel()
+
+	template := &taskdomain.Task{
+		CreatedAt: time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC),
+		Recurrence: &taskdomain.Recurrence{
+			Type:           taskdomain.RecurrenceDaily,
+			EveryNDays:     1,
+			ScheduleStatus: taskdomain.ScheduleStatusPaused,
+		},
+	}
+
+	got := materializeDates(template, time.Date(2026, 4, 7, 8, 0, 0, 0, time.UTC))
+	if len(got) != 0 {
+		t.Fatalf("materializeDates() len = %d, want 0", len(got))
+	}
+}
+
+func TestMonthlyDatesSkipsMissingDays(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 3, 31, 0, 0, 0, 0, time.UTC)
+
+	got := monthlyDates(start, end, 31)
+	want := []string{"2026-01-31", "2026-03-31"}
+	if len(got) != len(want) {
+		t.Fatalf("monthlyDates() len = %d, want %d", len(got), len(want))
+	}
+
+	for i := range want {
+		if got[i].Format(time.DateOnly) != want[i] {
+			t.Fatalf("monthlyDates()[%d] = %s, want %s", i, got[i].Format(time.DateOnly), want[i])
+		}
+	}
+}
+
+
+================================================================================
+📁 ПАПКА: ainurgo/migrations/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: migrations\0001_create_tasks.up.sql
+Размер: 821 байт
+────────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS tasks (
+	id BIGSERIAL PRIMARY KEY,
+	title TEXT NOT NULL,
+	description TEXT NOT NULL DEFAULT '',
+	status TEXT NOT NULL,
+	kind TEXT NOT NULL DEFAULT 'task',
+	template_id BIGINT NULL REFERENCES tasks (id) ON DELETE CASCADE,
+	scheduled_for DATE NULL,
+	recurrence JSONB NOT NULL DEFAULT '{}'::jsonb,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks (status);
+CREATE INDEX IF NOT EXISTS idx_tasks_kind ON tasks (kind);
+CREATE INDEX IF NOT EXISTS idx_tasks_template_id ON tasks (template_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_scheduled_for ON tasks (scheduled_for);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_template_schedule_unique
+	ON tasks (template_id, scheduled_for);
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: migrations\0002_add_employees_and_assignment.up.sql
+Размер: 439 байт
+────────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS employees (
+	id BIGSERIAL PRIMARY KEY,
+	name TEXT NOT NULL UNIQUE
+);
+
+ALTER TABLE tasks
+	ADD COLUMN IF NOT EXISTS assignee_id BIGINT NULL REFERENCES employees (id) ON DELETE SET NULL,
+	ADD COLUMN IF NOT EXISTS completion_report TEXT NOT NULL DEFAULT '',
+	ADD COLUMN IF NOT EXISTS admin_verified BOOLEAN NOT NULL DEFAULT FALSE;
+
+CREATE INDEX IF NOT EXISTS idx_tasks_assignee_id ON tasks (assignee_id);
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: migrations\0003_seed_employee_demo.up.sql
+Размер: 2,702 байт
+────────────────────────────────────────────────────────────────────────────────
+INSERT INTO employees (name)
+VALUES ('Кевин'), ('Джо'), ('Ной')
+ON CONFLICT (name) DO NOTHING;
+
+WITH employee_map AS (
+	SELECT id, name FROM employees
+),
+seed_tasks AS (
+	SELECT 'Кевин: закрытая задача' AS title, 'Подготовить и сдать сменный отчет' AS description, 'done' AS status, 'Кевин' AS assignee_name, 'Отчет принят администратором' AS completion_report, TRUE AS admin_verified
+	UNION ALL
+	SELECT 'Кевин: новая задача', 'Проверить новые назначения пациентов', 'new', 'Кевин', '', FALSE
+	UNION ALL
+	SELECT 'Кевин: задача в работе', 'Сделать обход закрепленных палат', 'in_progress', 'Кевин', '', FALSE
+	UNION ALL
+	SELECT 'Джо: закрытая задача', 'Закрыть отчет по оборудованию', 'done', 'Джо', 'Оборудование проверено и отчет приложен', TRUE
+	UNION ALL
+	SELECT 'Джо: новая задача', 'Подтвердить созвон с пациентами', 'new', 'Джо', '', FALSE
+	UNION ALL
+	SELECT 'Джо: задача в работе', 'Проверить остатки медикаментов', 'in_progress', 'Джо', '', FALSE
+	UNION ALL
+	SELECT 'Ной: закрытая задача', 'Собрать отчет после смены', 'done', 'Ной', 'Смена закрыта, данные переданы админу', TRUE
+	UNION ALL
+	SELECT 'Ной: новая задача', 'Подготовить список на инвентаризацию', 'new', 'Ной', '', FALSE
+	UNION ALL
+	SELECT 'Ной: задача в работе', 'Проверить готовность операционной', 'in_progress', 'Ной', '', FALSE
+	UNION ALL
+	SELECT 'Общая задача: принять новую заявку', 'Любой сотрудник может взять задачу в работу', 'new', NULL, '', FALSE
+	UNION ALL
+	SELECT 'Общая задача: проверить входящие документы', 'Свободная задача для любого сотрудника', 'new', NULL, '', FALSE
+)
+INSERT INTO tasks (
+	title, description, status, kind, assignee_id, completion_report, admin_verified, recurrence, created_at, updated_at
+)
+SELECT
+	s.title,
+	s.description,
+	s.status,
+	'task',
+	e.id,
+	s.completion_report,
+	s.admin_verified,
+	'{}'::jsonb,
+	NOW(),
+	NOW()
+FROM seed_tasks s
+LEFT JOIN employee_map e ON e.name = s.assignee_name
+WHERE NOT EXISTS (
+	SELECT 1 FROM tasks t WHERE t.title = s.title
+);
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: migrations\0004_add_scheduled_at.up.sql
+Размер: 155 байт
+────────────────────────────────────────────────────────────────────────────────
+ALTER TABLE tasks
+	ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ NULL;
+
+CREATE INDEX IF NOT EXISTS idx_tasks_scheduled_at ON tasks (scheduled_at);
+
+
+================================================================================
+📁 ПАПКА: ainurgo/scripts/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: scripts\fix_task_titles.sql
+Размер: 305 байт
+────────────────────────────────────────────────────────────────────────────────
+UPDATE tasks
+SET title = 'Позвонить клиентам в эти дни'
+WHERE id IN (1, 3, 4, 5, 6);
+
+UPDATE tasks
+SET title = 'Проверка окна генерации'
+WHERE id = 2;
+
+UPDATE tasks
+SET title = '31 число месяца'
+WHERE id IN (7, 8, 9, 10, 11, 12, 13, 14);
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: scripts\reset_demo_data.sql
+Размер: 7,052 байт
+────────────────────────────────────────────────────────────────────────────────
+BEGIN;
+
+TRUNCATE TABLE tasks RESTART IDENTITY CASCADE;
+
+INSERT INTO employees (id, name) VALUES
+  (1, 'Кевин'),
+  (2, 'Джо'),
+  (3, 'Ной')
+ON CONFLICT (id) DO UPDATE SET
+  name = EXCLUDED.name;
+
+INSERT INTO tasks (
+  id, title, description, status, kind, template_id, scheduled_for, scheduled_at,
+  assignee_id, completion_report, admin_verified, recurrence, created_at, updated_at
+) VALUES
+  (
+    1,
+    'Сделай уборку помещений',
+    'Ближайшие запланированные уборки территории Клиники',
+    'assigned',
+    'template',
+    NULL,
+    NULL,
+    NULL,
+    3,
+    '',
+    FALSE,
+    '{"type":"even_days","time_of_day":"10:00","schedule_status":"active","generation_window_unit":"days","generation_window_value":21}'::jsonb,
+    '2026-04-07T16:08:06.98132+05:00',
+    '2026-04-07T16:08:06.98132+05:00'
+  ),
+  (
+    2,
+    'Сделай уборку помещений',
+    'Ближайшие запланированные уборки территории Клиники',
+    'assigned',
+    'task',
+    1,
+    '2026-04-08',
+    '2026-04-08T10:00:00+05:00',
+    3,
+    '',
+    FALSE,
+    '{}'::jsonb,
+    '2026-04-07T16:08:06.983326+05:00',
+    '2026-04-07T16:08:06.983326+05:00'
+  ),
+  (
+    3,
+    'Сделай уборку помещений',
+    'Ближайшие запланированные уборки территории Клиники',
+    'assigned',
+    'task',
+    1,
+    '2026-04-10',
+    '2026-04-10T10:00:00+05:00',
+    3,
+    '',
+    FALSE,
+    '{}'::jsonb,
+    '2026-04-07T16:08:06.983326+05:00',
+    '2026-04-07T16:08:06.983326+05:00'
+  ),
+  (
+    4,
+    'Сделай уборку помещений',
+    'Ближайшие запланированные уборки территории Клиники',
+    'assigned',
+    'task',
+    1,
+    '2026-04-12',
+    '2026-04-12T10:00:00+05:00',
+    3,
+    '',
+    FALSE,
+    '{}'::jsonb,
+    '2026-04-07T16:08:06.983326+05:00',
+    '2026-04-07T16:08:06.983326+05:00'
+  ),
+  (
+    5,
+    'Сделай уборку помещений',
+    'Ближайшие запланированные уборки территории Клиники',
+    'assigned',
+    'task',
+    1,
+    '2026-04-14',
+    '2026-04-14T10:00:00+05:00',
+    3,
+    '',
+    FALSE,
+    '{}'::jsonb,
+    '2026-04-07T16:08:06.983326+05:00',
+    '2026-04-07T16:08:06.983326+05:00'
+  ),
+  (
+    6,
+    'Сделай уборку помещений',
+    'Ближайшие запланированные уборки территории Клиники',
+    'assigned',
+    'task',
+    1,
+    '2026-04-16',
+    '2026-04-16T10:00:00+05:00',
+    3,
+    '',
+    FALSE,
+    '{}'::jsonb,
+    '2026-04-07T16:08:06.983326+05:00',
+    '2026-04-07T16:08:06.983326+05:00'
+  ),
+  (
+    7,
+    'Сделай уборку помещений',
+    'Ближайшие запланированные уборки территории Клиники',
+    'assigned',
+    'task',
+    1,
+    '2026-04-18',
+    '2026-04-18T10:00:00+05:00',
+    3,
+    '',
+    FALSE,
+    '{}'::jsonb,
+    '2026-04-07T16:08:06.983326+05:00',
+    '2026-04-07T16:08:06.983326+05:00'
+  ),
+  (
+    8,
+    'Сделай уборку помещений',
+    'Ближайшие запланированные уборки территории Клиники',
+    'assigned',
+    'task',
+    1,
+    '2026-04-20',
+    '2026-04-20T10:00:00+05:00',
+    3,
+    '',
+    FALSE,
+    '{}'::jsonb,
+    '2026-04-07T16:08:06.983326+05:00',
+    '2026-04-07T16:08:06.983326+05:00'
+  ),
+  (
+    9,
+    'Сделай уборку помещений',
+    'Ближайшие запланированные уборки территории Клиники',
+    'assigned',
+    'task',
+    1,
+    '2026-04-22',
+    '2026-04-22T10:00:00+05:00',
+    3,
+    '',
+    FALSE,
+    '{}'::jsonb,
+    '2026-04-07T16:08:06.983326+05:00',
+    '2026-04-07T16:08:06.983326+05:00'
+  ),
+  (
+    10,
+    'Сделай уборку помещений',
+    'Ближайшие запланированные уборки территории Клиники',
+    'assigned',
+    'task',
+    1,
+    '2026-04-24',
+    '2026-04-24T10:00:00+05:00',
+    3,
+    '',
+    FALSE,
+    '{}'::jsonb,
+    '2026-04-07T16:08:06.983326+05:00',
+    '2026-04-07T16:08:06.983326+05:00'
+  ),
+  (
+    11,
+    'Сделай уборку помещений',
+    'Ближайшие запланированные уборки территории Клиники',
+    'assigned',
+    'task',
+    1,
+    '2026-04-26',
+    '2026-04-26T10:00:00+05:00',
+    3,
+    '',
+    FALSE,
+    '{}'::jsonb,
+    '2026-04-07T16:08:06.983326+05:00',
+    '2026-04-07T16:08:06.983326+05:00'
+  ),
+  (
+    12,
+    'Сделай уборку помещений',
+    'Ближайшие запланированные уборки территории Клиники',
+    'assigned',
+    'task',
+    1,
+    '2026-04-28',
+    '2026-04-28T10:00:00+05:00',
+    3,
+    '',
+    FALSE,
+    '{}'::jsonb,
+    '2026-04-07T16:08:06.983326+05:00',
+    '2026-04-07T16:08:06.983326+05:00'
+  ),
+  (
+    13,
+    'Провести операцию',
+    'Пациент - Роберт А. палата 456',
+    'assigned',
+    'task',
+    NULL,
+    NULL,
+    '2026-04-08T20:18:00+05:00',
+    1,
+    '',
+    FALSE,
+    '{}'::jsonb,
+    '2026-04-07T16:13:49.747266+05:00',
+    '2026-04-07T16:13:49.747266+05:00'
+  ),
+  (
+    14,
+    'Сделать обзвон',
+    'Пациенты, клиенты получены по e-mail',
+    'done',
+    'task',
+    NULL,
+    NULL,
+    '2026-04-07T16:20:00+05:00',
+    2,
+    'Отчет прислал по e-mail',
+    TRUE,
+    '{}'::jsonb,
+    '2026-04-07T16:20:32.860233+05:00',
+    '2026-04-07T16:21:09.744842+05:00'
+  ),
+  (
+    15,
+    'Проведи встречу с клиентом',
+    '',
+    'in_progress',
+    'task',
+    NULL,
+    NULL,
+    NULL,
+    2,
+    '',
+    FALSE,
+    '{}'::jsonb,
+    '2026-04-07T16:22:07.669138+05:00',
+    '2026-04-07T16:22:18.990541+05:00'
+  ),
+  (
+    16,
+    'Отчет за неделю',
+    'Подготовь отчет, Джо',
+    'done',
+    'task',
+    NULL,
+    NULL,
+    NULL,
+    2,
+    'Отправил руководителю отчет',
+    FALSE,
+    '{}'::jsonb,
+    '2026-04-07T16:23:26.358347+05:00',
+    '2026-04-07T16:24:03.59609+05:00'
+  ),
+  (
+    17,
+    'Встретить директора',
+    'Кто свободен, пожалуйста встретьте директора',
+    'new',
+    'task',
+    NULL,
+    NULL,
+    '2026-04-07T19:25:00+05:00',
+    NULL,
+    '',
+    FALSE,
+    '{}'::jsonb,
+    '2026-04-07T16:34:31.057355+05:00',
+    '2026-04-07T16:34:31.057355+05:00'
+  );
+
+SELECT setval('tasks_id_seq', 17, true);
+
+COMMIT;
+
+
+================================================================================
+СТАТИСТИКА ЭКСПОРТА
+================================================================================
+Всего обработано файлов: 28
+Всего пропущено файлов: 2
+Общий размер выходного файла: 143,378 байт

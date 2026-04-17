@@ -1,0 +1,1849 @@
+================================================================================
+ЭКСПОРТ РЕПОЗИТОРИЯ: BogdanPozhidaev
+Путь: C:\Users\vladk\Desktop\test\forks\BogdanPozhidaev
+Дата экспорта: 2026-04-14 01:14:46
+================================================================================
+
+
+================================================================================
+📁 ПАПКА: BogdanPozhidaev/
+================================================================================
+
+[ПРОПУЩЕН] .dockerignore (бинарный/служебный/слишком большой)
+
+[ПРОПУЩЕН] .gitignore (бинарный/служебный/слишком большой)
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: Dockerfile
+Размер: 414 байт
+────────────────────────────────────────────────────────────────────────────────
+FROM golang:1.23.0-alpine AS builder
+
+WORKDIR /src
+
+RUN apk add --no-cache ca-certificates
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/taskservice ./cmd/api
+
+FROM alpine:3.21
+
+WORKDIR /app
+
+RUN apk add --no-cache ca-certificates
+
+COPY --from=builder /out/taskservice /app/taskservice
+
+EXPOSE 8080
+
+CMD ["/app/taskservice"]
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: README.md
+Размер: 2,216 байт
+────────────────────────────────────────────────────────────────────────────────
+# Task Service
+
+Сервис для управления задачами с HTTP API на Go.
+
+## Требования
+
+- Go `1.23+`
+- Docker и Docker Compose
+
+## Быстрый запуск через Docker Compose
+
+```bash
+docker compose up --build
+```
+
+После запуска сервис будет доступен по адресу `http://localhost:8080`.
+
+Если `postgres` уже запускался ранее со старой схемой, пересоздай volume:
+
+```bash
+docker compose down -v
+docker compose up --build
+```
+
+Причина в том, что SQL-файл из `migrations/0001_create_tasks.up.sql` монтируется в `docker-entrypoint-initdb.d` и применяется только при инициализации пустого data volume.
+
+## Swagger
+
+Swagger UI:
+
+```text
+http://localhost:8080/swagger/
+```
+
+OpenAPI JSON:
+
+```text
+http://localhost:8080/swagger/openapi.json
+```
+
+## API
+
+Базовый префикс API:
+
+```text
+/api/v1
+```
+
+Основные маршруты:
+
+- `POST /api/v1/tasks`
+- `GET /api/v1/tasks`
+- `GET /api/v1/tasks/{id}`
+- `PUT /api/v1/tasks/{id}`
+- `DELETE /api/v1/tasks/{id}`
+
+## Новые функции (v2.0)
+
+- **Планирование**: Добавлены поля `due_date` и `repeat_rule`.
+- **Авто-повтор**: При завершении задачи (`status = "done"`) с заполненным правилом повторения, сервис автоматически создает следующую итерацию задачи.
+- **Гибкие правила**: Поддержка ежедневных (`d N`), ежемесячных (`m day`), четных/нечетных (`even`/`odd`) дней и списка конкретных дат.
+- **Тестирование**: добавлены тесты для оценки корректной работы
+
+p.s. комментарии и некоторые незначимые и безопасные участки кода написаны нейросетью в целях экономии времени. Функции и методы протестированы
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: docker-compose.yml
+Размер: 846 байт
+────────────────────────────────────────────────────────────────────────────────
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: taskservice
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d taskservice"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations/0001_create_tasks.up.sql:/docker-entrypoint-initdb.d/001_create_tasks.sql:ro
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      HTTP_ADDR: :8080
+      DATABASE_DSN: postgres://postgres:postgres@postgres:5432/taskservice?sslmode=disable
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: go.mod
+Размер: 441 байт
+────────────────────────────────────────────────────────────────────────────────
+module example.com/taskservice
+
+go 1.23.0
+
+require (
+	github.com/gorilla/mux v1.8.1
+	github.com/jackc/pgx/v5 v5.7.6
+)
+
+require (
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
+	golang.org/x/crypto v0.37.0 // indirect
+	golang.org/x/sync v0.13.0 // indirect
+	golang.org/x/text v0.24.0 // indirect
+)
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: go.sum
+Размер: 2,649 байт
+────────────────────────────────────────────────────────────────────────────────
+github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
+github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/gorilla/mux v1.8.1 h1:TuBL49tXwgrFYWhqrNgrUNEY92u81SPhu7sTdzQEiWY=
+github.com/gorilla/mux v1.8.1/go.mod h1:AKf9I4AEqPTmMytcMc0KkNouC66V3BtZ4qD5fmWSiMQ=
+github.com/jackc/pgpassfile v1.0.0 h1:/6Hmqy13Ss2zCq62VdNG8tM1wchn8zjSGOBJ6icpsIM=
+github.com/jackc/pgpassfile v1.0.0/go.mod h1:CEx0iS5ambNFdcRtxPj5JhEz+xB6uRky5eyVu/W2HEg=
+github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 h1:iCEnooe7UlwOQYpKFhBabPMi4aNAfoODPEFNiAnClxo=
+github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761/go.mod h1:5TJZWKEWniPve33vlWYSoGYefn3gLQRzjfDlhSJ9ZKM=
+github.com/jackc/pgx/v5 v5.7.6 h1:rWQc5FwZSPX58r1OQmkuaNicxdmExaEz5A2DO2hUuTk=
+github.com/jackc/pgx/v5 v5.7.6/go.mod h1:aruU7o91Tc2q2cFp5h4uP3f6ztExVpyVv88Xl/8Vl8M=
+github.com/jackc/puddle/v2 v2.2.2 h1:PR8nw+E/1w0GLuRFSmiioY6UooMp6KJv0/61nB7icHo=
+github.com/jackc/puddle/v2 v2.2.2/go.mod h1:vriiEXHvEE654aYKXXjOvZM39qJ0q+azkZFrfEOc3H4=
+github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
+github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
+github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
+github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UVUgZn+9EI=
+github.com/stretchr/testify v1.7.0/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
+github.com/stretchr/testify v1.8.1 h1:w7B6lhMri9wdJUVmEZPGGhZzrYTPvgJArz7wNPgYKsk=
+github.com/stretchr/testify v1.8.1/go.mod h1:w2LPCIKwWwSfY2zedu0+kehJoqGctiVI29o6fzry7u4=
+golang.org/x/crypto v0.37.0 h1:kJNSjF/Xp7kU0iB2Z+9viTPMW4EqqsrywMXLJOOsXSE=
+golang.org/x/crypto v0.37.0/go.mod h1:vg+k43peMZ0pUMhYmVAWysMK35e6ioLh3wB8ZCAfbVc=
+golang.org/x/sync v0.13.0 h1:AauUjRAJ9OSnvULf/ARrrVywoJDy0YS2AwQ98I37610=
+golang.org/x/sync v0.13.0/go.mod h1:1dzgHSNfp02xaA81J2MS99Qcpr2w7fw1gpm99rleRqA=
+golang.org/x/text v0.24.0 h1:dd5Bzh4yt5KYA8f9CJHCP4FB4D51c2c6JvN37xJJkJ0=
+golang.org/x/text v0.24.0/go.mod h1:L8rBsPeo2pSS+xqN0d5u2ikmjtmoJbDBT1b7nHvFCdU=
+gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
+gopkg.in/yaml.v3 v3.0.0-20200313102051-9f266ea9e77c/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
+gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+
+
+================================================================================
+📁 ПАПКА: BogdanPozhidaev/cmd/
+================================================================================
+
+================================================================================
+📁 ПАПКА: BogdanPozhidaev/cmd\api/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: cmd\api\main.go
+Размер: 2,348 байт
+────────────────────────────────────────────────────────────────────────────────
+package main
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	infrastructurepostgres "example.com/taskservice/internal/infrastructure/postgres"
+	postgresrepo "example.com/taskservice/internal/repository/postgres"
+	transporthttp "example.com/taskservice/internal/transport/http"
+	swaggerdocs "example.com/taskservice/internal/transport/http/docs"
+	httphandlers "example.com/taskservice/internal/transport/http/handlers"
+	"example.com/taskservice/internal/usecase/task"
+)
+
+func main() {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
+
+	cfg := loadConfig()
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	pool, err := infrastructurepostgres.Open(ctx, cfg.DatabaseDSN)
+	if err != nil {
+		logger.Error("open postgres", "error", err)
+		os.Exit(1)
+	}
+	defer pool.Close()
+
+	taskRepo := postgresrepo.New(pool)
+	taskUsecase := task.NewService(taskRepo)
+	taskHandler := httphandlers.NewTaskHandler(taskUsecase)
+	docsHandler := swaggerdocs.NewHandler()
+	router := transporthttp.NewRouter(taskHandler, docsHandler)
+
+	server := &http.Server{
+		Addr:              cfg.HTTPAddr,
+		Handler:           router,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	go func() {
+		<-ctx.Done()
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			logger.Error("shutdown http server", "error", err)
+		}
+	}()
+
+	logger.Info("http server started", "addr", cfg.HTTPAddr)
+
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		logger.Error("listen and serve", "error", err)
+		os.Exit(1)
+	}
+}
+
+type config struct {
+	HTTPAddr    string
+	DatabaseDSN string
+}
+
+func loadConfig() config {
+	cfg := config{
+		HTTPAddr:    envOrDefault("HTTP_ADDR", ":8080"),
+		DatabaseDSN: envOrDefault("DATABASE_DSN", "postgres://postgres:postgres@localhost:5432/taskservice?sslmode=disable"),
+	}
+
+	if cfg.DatabaseDSN == "" {
+		panic(fmt.Errorf("DATABASE_DSN is required"))
+	}
+
+	return cfg
+}
+
+func envOrDefault(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+
+	return fallback
+}
+
+
+================================================================================
+📁 ПАПКА: BogdanPozhidaev/internal/
+================================================================================
+
+================================================================================
+📁 ПАПКА: BogdanPozhidaev/internal\domain/
+================================================================================
+
+================================================================================
+📁 ПАПКА: BogdanPozhidaev/internal\domain\task/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\domain\task\errors.go
+Размер: 83 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import "errors"
+
+var ErrNotFound = errors.New("task not found")
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\domain\task\task.go
+Размер: 710 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import "time"
+
+type Status string
+
+const (
+	StatusNew        Status = "new"
+	StatusInProgress Status = "in_progress"
+	StatusDone       Status = "done"
+)
+
+type Task struct {
+	ID          int64      `json:"id"`
+	Title       string     `json:"title"`
+	Description string     `json:"description"`
+	Status      Status     `json:"status"`
+	DueDate     *time.Time `json:"due_date,omitempty"`
+	RepeatRule  string     `json:"repeat_rule,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+}
+
+func (s Status) Valid() bool {
+	switch s {
+	case StatusNew, StatusInProgress, StatusDone:
+		return true
+	default:
+		return false
+	}
+}
+
+
+================================================================================
+📁 ПАПКА: BogdanPozhidaev/internal\infrastructure/
+================================================================================
+
+================================================================================
+📁 ПАПКА: BogdanPozhidaev/internal\infrastructure\postgres/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\infrastructure\postgres\pool.go
+Размер: 512 байт
+────────────────────────────────────────────────────────────────────────────────
+package postgres
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+func Open(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
+	if dsn == "" {
+		return nil, fmt.Errorf("database dsn is empty")
+	}
+
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, err
+	}
+
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, err
+	}
+
+	return pool, nil
+}
+
+
+================================================================================
+📁 ПАПКА: BogdanPozhidaev/internal\repository/
+================================================================================
+
+================================================================================
+📁 ПАПКА: BogdanPozhidaev/internal\repository\postgres/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\repository\postgres\task_repository.go
+Размер: 3,407 байт
+────────────────────────────────────────────────────────────────────────────────
+package postgres
+
+import (
+	"context"
+	"errors"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type Repository struct {
+	pool *pgxpool.Pool
+}
+
+func New(pool *pgxpool.Pool) *Repository {
+	return &Repository{pool: pool}
+}
+
+func (r *Repository) Create(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error) {
+	const query = `
+		INSERT INTO tasks (title, description, status, due_date, repeat_rule, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id, title, description, status, due_date, repeat_rule, created_at, updated_at
+	`
+
+	row := r.pool.QueryRow(ctx, query,
+		task.Title,
+		task.Description,
+		task.Status,
+		task.DueDate,
+		task.RepeatRule,
+		task.CreatedAt,
+		task.UpdatedAt,
+	)
+	return scanTask(row)
+}
+
+func (r *Repository) GetByID(ctx context.Context, id int64) (*taskdomain.Task, error) {
+	const query = `
+		SELECT id, title, description, status, due_date, repeat_rule, created_at, updated_at
+		FROM tasks
+		WHERE id = $1
+	`
+
+	row := r.pool.QueryRow(ctx, query, id)
+	found, err := scanTask(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, taskdomain.ErrNotFound
+		}
+
+		return nil, err
+	}
+
+	return found, nil
+}
+
+func (r *Repository) Update(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error) {
+	const query = `
+		UPDATE tasks
+		SET title = $1,
+			description = $2,
+			status = $3,
+			due_date = $4,
+			repeat_rule = $5,
+			updated_at = $6
+		WHERE id = $7
+		RETURNING id, title, description, status, due_date, repeat_rule, created_at, updated_at
+	`
+
+	row := r.pool.QueryRow(ctx, query, task.Title, task.Description, task.Status, task.DueDate, task.RepeatRule, task.UpdatedAt, task.ID)
+	updated, err := scanTask(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, taskdomain.ErrNotFound
+		}
+
+		return nil, err
+	}
+
+	return updated, nil
+}
+
+func (r *Repository) Delete(ctx context.Context, id int64) error {
+	const query = `DELETE FROM tasks WHERE id = $1`
+
+	result, err := r.pool.Exec(ctx, query, id)
+	if err != nil {
+		return err
+	}
+
+	if result.RowsAffected() == 0 {
+		return taskdomain.ErrNotFound
+	}
+
+	return nil
+}
+
+func (r *Repository) List(ctx context.Context) ([]taskdomain.Task, error) {
+	const query = `
+		SELECT id, title, description, status, due_date, repeat_rule, created_at, updated_at
+		FROM tasks
+		ORDER BY id DESC
+	`
+
+	rows, err := r.pool.Query(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	tasks := make([]taskdomain.Task, 0)
+	for rows.Next() {
+		task, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+
+		tasks = append(tasks, *task)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return tasks, nil
+}
+
+type taskScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanTask(scanner taskScanner) (*taskdomain.Task, error) {
+	var (
+		task   taskdomain.Task
+		status string
+	)
+
+	if err := scanner.Scan(
+		&task.ID,
+		&task.Title,
+		&task.Description,
+		&status,
+		&task.DueDate,    // Читаем из БД
+		&task.RepeatRule, // Читаем из БД
+		&task.CreatedAt,
+		&task.UpdatedAt,
+	); err != nil {
+		return nil, err
+	}
+
+	task.Status = taskdomain.Status(status)
+	return &task, nil
+}
+
+
+================================================================================
+📁 ПАПКА: BogdanPozhidaev/internal\transport/
+================================================================================
+
+================================================================================
+📁 ПАПКА: BogdanPozhidaev/internal\transport\http/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\router.go
+Размер: 1,099 байт
+────────────────────────────────────────────────────────────────────────────────
+package transporthttp
+
+import (
+	"net/http"
+
+	"github.com/gorilla/mux"
+
+	swaggerdocs "example.com/taskservice/internal/transport/http/docs"
+	httphandlers "example.com/taskservice/internal/transport/http/handlers"
+)
+
+func NewRouter(taskHandler *httphandlers.TaskHandler, docsHandler *swaggerdocs.Handler) *mux.Router {
+	router := mux.NewRouter().StrictSlash(true)
+
+	router.HandleFunc("/swagger/openapi.json", docsHandler.ServeSpec).Methods(http.MethodGet)
+	router.HandleFunc("/swagger/", docsHandler.ServeUI).Methods(http.MethodGet)
+	router.HandleFunc("/swagger", docsHandler.RedirectToUI).Methods(http.MethodGet)
+
+	api := router.PathPrefix("/api/v1").Subrouter()
+
+	api.HandleFunc("/tasks", taskHandler.Create).Methods(http.MethodPost)
+	api.HandleFunc("/tasks", taskHandler.List).Methods(http.MethodGet)
+	api.HandleFunc("/tasks/{id:[0-9]+}", taskHandler.GetByID).Methods(http.MethodGet)
+	api.HandleFunc("/tasks/{id:[0-9]+}", taskHandler.Update).Methods(http.MethodPut)
+	api.HandleFunc("/tasks/{id:[0-9]+}", taskHandler.Delete).Methods(http.MethodDelete)
+
+	return router
+}
+
+
+================================================================================
+📁 ПАПКА: BogdanPozhidaev/internal\transport\http\docs/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\docs\handler.go
+Размер: 1,779 байт
+────────────────────────────────────────────────────────────────────────────────
+package docs
+
+import (
+	"embed"
+	"net/http"
+)
+
+//go:embed openapi.json
+var openAPISpec embed.FS
+
+type Handler struct {
+	spec []byte
+}
+
+func NewHandler() *Handler {
+	spec, err := openAPISpec.ReadFile("openapi.json")
+	if err != nil {
+		panic(err)
+	}
+
+	return &Handler{spec: spec}
+}
+
+func (h *Handler) ServeSpec(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+
+	_, _ = w.Write(h.spec)
+}
+
+func (h *Handler) ServeUI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+
+	_, _ = w.Write([]byte(swaggerUIHTML))
+}
+
+func (h *Handler) RedirectToUI(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "/swagger/", http.StatusMovedPermanently)
+}
+
+var swaggerUIHTML = []byte(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Task Service Swagger</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+  <style>
+    body { margin: 0; background: #f6f7fb; }
+    #swagger-ui { max-width: 1440px; margin: 0 auto; }
+  </style>
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js" crossorigin></script>
+  <script>
+    window.onload = function() {
+      window.ui = SwaggerUIBundle({
+        url: '/swagger/openapi.json',
+        dom_id: '#swagger-ui',
+        deepLinking: true,
+        presets: [SwaggerUIBundle.presets.apis],
+        layout: 'BaseLayout'
+      });
+    };
+  </script>
+</body>
+</html>`)
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\docs\openapi.json
+Размер: 6,214 байт
+────────────────────────────────────────────────────────────────────────────────
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Task Service API",
+    "version": "1.0.0",
+    "description": "CRUD API for tasks built with clean architecture."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8080"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Tasks",
+      "description": "Operations with tasks"
+    }
+  ],
+  "paths": {
+    "/api/v1/tasks": {
+      "get": {
+        "tags": ["Tasks"],
+        "summary": "List tasks",
+        "responses": {
+          "200": {
+            "description": "Task list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/Task" }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["Tasks"],
+        "summary": "Create task",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateTaskRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created task",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Task" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/api/v1/tasks/{id}": {
+      "get": {
+        "tags": ["Tasks"],
+        "summary": "Get task by ID",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Task",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Task" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "put": {
+        "tags": ["Tasks"],
+        "summary": "Update task",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/UpdateTaskRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated task",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Task" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["Tasks"],
+        "summary": "Delete task",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "responses": {
+          "204": { "description": "Deleted" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    }
+  },
+  "components": {
+    "responses": {
+      "BadRequest": {
+        "description": "Bad request",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Resource not found",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "CreateTaskRequest": {
+        "type": "object",
+        "required": ["title"],
+        "properties": {
+          "title": {
+            "type": "string",
+            "example": "Prepare release"
+          },
+          "description": {
+            "type": "string",
+            "example": "Collect release notes and check migrations"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["new", "in_progress", "done"],
+            "example": "new"
+          }
+        }
+      },
+      "UpdateTaskRequest": {
+        "type": "object",
+        "required": ["title", "status"],
+        "properties": {
+          "title": {
+            "type": "string",
+            "example": "Prepare release"
+          },
+          "description": {
+            "type": "string",
+            "example": "Collect release notes and check migrations"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["new", "in_progress", "done"],
+            "example": "in_progress"
+          }
+        }
+      },
+      "Task": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "format": "int64", "example": 1 },
+          "title": { "type": "string", "example": "Prepare release" },
+          "description": {
+            "type": "string",
+            "example": "Collect release notes and check migrations"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["new", "in_progress", "done"],
+            "example": "new"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-03-24T00:00:00Z"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-03-24T00:00:00Z"
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": { "type": "string", "example": "task not found" }
+        }
+      }
+    }
+  }
+}
+
+
+================================================================================
+📁 ПАПКА: BogdanPozhidaev/internal\transport\http\handlers/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\handlers\dto.go
+Размер: 1,243 байт
+────────────────────────────────────────────────────────────────────────────────
+package handlers
+
+import (
+	"time"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type taskMutationDTO struct {
+	Title       string            `json:"title"`
+	Description string            `json:"description"`
+	Status      taskdomain.Status `json:"status"`
+	DueDate     string            `json:"due_date,omitempty"`
+	RepeatRule  string            `json:"repeat_rule,omitempty"`
+}
+
+type taskDTO struct {
+	ID          int64             `json:"id"`
+	Title       string            `json:"title"`
+	Description string            `json:"description"`
+	Status      taskdomain.Status `json:"status"`
+	DueDate     string            `json:"due_date,omitempty"`
+	RepeatRule  string            `json:"repeat_rule,omitempty"`
+	CreatedAt   time.Time         `json:"created_at"`
+	UpdatedAt   time.Time         `json:"updated_at"`
+}
+
+func newTaskDTO(task *taskdomain.Task) taskDTO {
+	dto := taskDTO{
+		ID:          task.ID,
+		Title:       task.Title,
+		Description: task.Description,
+		Status:      task.Status,
+		RepeatRule:  task.RepeatRule,
+		CreatedAt:   task.CreatedAt,
+		UpdatedAt:   task.UpdatedAt,
+	}
+	if task.DueDate != nil {
+		dto.DueDate = task.DueDate.Format("20060102")
+	}
+
+	return dto
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\handlers\task_handler.go
+Размер: 4,880 байт
+────────────────────────────────────────────────────────────────────────────────
+package handlers
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strconv"
+	"time"
+
+	"github.com/gorilla/mux"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+	taskusecase "example.com/taskservice/internal/usecase/task"
+)
+
+type TaskHandler struct {
+	usecase taskusecase.Usecase
+}
+
+func NewTaskHandler(usecase taskusecase.Usecase) *TaskHandler {
+	return &TaskHandler{usecase: usecase}
+}
+
+func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
+	var req taskMutationDTO
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	// Парсим дату
+	dueDate, err := parseDueDate(req.DueDate)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	created, err := h.usecase.Create(r.Context(), taskusecase.CreateInput{
+		Title:       req.Title,
+		Description: req.Description,
+		Status:      req.Status,
+		DueDate:     dueDate,        // Передаем распарсенную дату
+		RepeatRule:  req.RepeatRule, // Передаем правило
+	})
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, newTaskDTO(created))
+}
+
+func (h *TaskHandler) GetByID(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	task, err := h.usecase.GetByID(r.Context(), id)
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, newTaskDTO(task))
+}
+
+func (h *TaskHandler) Update(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	var req taskMutationDTO
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	// Парсим дату
+	dueDate, err := parseDueDate(req.DueDate)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	updated, err := h.usecase.Update(r.Context(), id, taskusecase.UpdateInput{
+		Title:       req.Title,
+		Description: req.Description,
+		Status:      req.Status,
+		DueDate:     dueDate,        // Передаем распарсенную дату
+		RepeatRule:  req.RepeatRule, // Передаем правило
+	})
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, newTaskDTO(updated))
+}
+
+func (h *TaskHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	if err := h.usecase.Delete(r.Context(), id); err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
+	tasks, err := h.usecase.List(r.Context())
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	response := make([]taskDTO, 0, len(tasks))
+	for i := range tasks {
+		response = append(response, newTaskDTO(&tasks[i]))
+	}
+
+	writeJSON(w, http.StatusOK, response)
+}
+
+func getIDFromRequest(r *http.Request) (int64, error) {
+	rawID := mux.Vars(r)["id"]
+	if rawID == "" {
+		return 0, errors.New("missing task id")
+	}
+
+	id, err := strconv.ParseInt(rawID, 10, 64)
+	if err != nil {
+		return 0, errors.New("invalid task id")
+	}
+
+	if id <= 0 {
+		return 0, errors.New("invalid task id")
+	}
+
+	return id, nil
+}
+
+func decodeJSON(r *http.Request, dst any) error {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+
+	if err := decoder.Decode(dst); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func writeUsecaseError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, taskdomain.ErrNotFound):
+		writeError(w, http.StatusNotFound, err)
+	case errors.Is(err, taskusecase.ErrInvalidInput):
+		writeError(w, http.StatusBadRequest, err)
+	default:
+		writeError(w, http.StatusInternalServerError, err)
+	}
+}
+
+func writeError(w http.ResponseWriter, status int, err error) {
+	writeJSON(w, status, map[string]string{
+		"error": err.Error(),
+	})
+}
+
+func writeJSON(w http.ResponseWriter, status int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+// parseDueDate конвертирует строку из JSON в *time.Time
+func parseDueDate(dateStr string) (*time.Time, error) {
+	if dateStr == "" {
+		return nil, nil // Если дата не передана, возвращаем nil
+	}
+
+	// Используем формат из твоего nextdate.go
+	parsed, err := time.Parse("20060102", dateStr)
+	if err != nil {
+		return nil, errors.New("invalid due_date format, expected YYYYMMDD")
+	}
+
+	return &parsed, nil
+}
+
+
+================================================================================
+📁 ПАПКА: BogdanPozhidaev/internal\usecase/
+================================================================================
+
+================================================================================
+📁 ПАПКА: BogdanPozhidaev/internal\usecase\task/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\task\errors.go
+Размер: 91 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import "errors"
+
+var ErrInvalidInput = errors.New("invalid task input")
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\task\ports.go
+Размер: 1,135 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import (
+	"context"
+	"time"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type Repository interface {
+	Create(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error)
+	GetByID(ctx context.Context, id int64) (*taskdomain.Task, error)
+	Update(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error)
+	Delete(ctx context.Context, id int64) error
+	List(ctx context.Context) ([]taskdomain.Task, error)
+}
+
+type Usecase interface {
+	Create(ctx context.Context, input CreateInput) (*taskdomain.Task, error)
+	GetByID(ctx context.Context, id int64) (*taskdomain.Task, error)
+	Update(ctx context.Context, id int64, input UpdateInput) (*taskdomain.Task, error)
+	Delete(ctx context.Context, id int64) error
+	List(ctx context.Context) ([]taskdomain.Task, error)
+}
+
+type CreateInput struct {
+	Title       string
+	Description string
+	Status      taskdomain.Status
+	DueDate     *time.Time
+	RepeatRule  string
+}
+
+type UpdateInput struct {
+	Title       string
+	Description string
+	Status      taskdomain.Status
+	DueDate     *time.Time
+	RepeatRule  string
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\task\service.go
+Размер: 4,567 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+	"example.com/taskservice/pkg/scheduler"
+)
+
+type Service struct {
+	repo Repository
+	now  func() time.Time
+}
+
+func NewService(repo Repository) *Service {
+	return &Service{
+		repo: repo,
+		now:  func() time.Time { return time.Now().UTC() },
+	}
+}
+
+func (s *Service) Create(ctx context.Context, input CreateInput) (*taskdomain.Task, error) {
+	normalized, err := validateCreateInput(input)
+	if err != nil {
+		return nil, err
+	}
+
+	model := &taskdomain.Task{
+		Title:       normalized.Title,
+		Description: normalized.Description,
+		Status:      normalized.Status,
+	}
+	now := s.now()
+	model.CreatedAt = now
+	model.UpdatedAt = now
+
+	created, err := s.repo.Create(ctx, model)
+	if err != nil {
+		return nil, err
+	}
+
+	return created, nil
+}
+
+func (s *Service) GetByID(ctx context.Context, id int64) (*taskdomain.Task, error) {
+	if id <= 0 {
+		return nil, fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+	}
+
+	return s.repo.GetByID(ctx, id)
+}
+
+// В файле internal/usecase/task/service.go
+
+func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (*taskdomain.Task, error) {
+	normalized, err := validateUpdateInput(input)
+	if err != nil {
+		return nil, err
+	}
+
+	// 1. Подготавливаем модель для обновления
+	model := &taskdomain.Task{
+		ID:          id,
+		Title:       normalized.Title,
+		Description: normalized.Description,
+		Status:      normalized.Status,
+		DueDate:     normalized.DueDate,
+		RepeatRule:  normalized.RepeatRule,
+		UpdatedAt:   s.now(),
+	}
+
+	// 2. Обновляем текущую задачу в репозитории
+	updated, err := s.repo.Update(ctx, model)
+	if err != nil {
+		return nil, err
+	}
+
+	// 3. Магия периодичности: если задача завершена и есть правило повтора
+	if updated.Status == taskdomain.StatusDone && updated.RepeatRule != "" {
+		err := s.handleRecurringTask(ctx, updated)
+		if err != nil {
+			// Можно просто залогировать ошибку, чтобы не "валить" основной Update
+			fmt.Printf("failed to create recurring task: %v\n", err)
+		}
+	}
+
+	return updated, nil
+}
+
+func (s *Service) Delete(ctx context.Context, id int64) error {
+	if id <= 0 {
+		return fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+	}
+
+	return s.repo.Delete(ctx, id)
+}
+
+func (s *Service) List(ctx context.Context) ([]taskdomain.Task, error) {
+	return s.repo.List(ctx)
+}
+
+func validateCreateInput(input CreateInput) (CreateInput, error) {
+	input.Title = strings.TrimSpace(input.Title)
+	if input.Title == "" {
+		return CreateInput{}, fmt.Errorf("%w: title is required", ErrInvalidInput)
+	}
+	if input.Status == "" {
+		input.Status = taskdomain.StatusNew
+	}
+	// Проверка правила (опционально): можно вызвать scheduler.CheckRule(input.RepeatRule)
+	return input, nil
+}
+
+func validateUpdateInput(input UpdateInput) (UpdateInput, error) {
+	input.Title = strings.TrimSpace(input.Title)
+	if input.Title == "" {
+		return UpdateInput{}, fmt.Errorf("%w: title is required", ErrInvalidInput)
+	}
+	return input, nil
+}
+
+func (s *Service) handleRecurringTask(ctx context.Context, task *taskdomain.Task) error {
+	// Определяем точку отсчета для следующей даты
+	var lastDueDate time.Time
+	if task.DueDate != nil {
+		lastDueDate = *task.DueDate
+	} else {
+		lastDueDate = s.now()
+	}
+
+	// Вычисляем следующую дату через наш пакет scheduler
+	// Форматируем дату в 20060102, как того ожидает NextDate
+	nextDateStr, err := scheduler.NextDate(s.now(), lastDueDate.Format("20060102"), task.RepeatRule)
+	if err != nil {
+		return err
+	}
+
+	// Парсим обратно в time.Time
+	nextDueDate, err := time.Parse("20060102", nextDateStr)
+	if err != nil {
+		return err
+	}
+
+	// Создаем новую задачу
+	nextTask := &taskdomain.Task{
+		Title:       task.Title,
+		Description: task.Description,
+		Status:      taskdomain.StatusNew, // Новая задача всегда New
+		DueDate:     &nextDueDate,
+		RepeatRule:  task.RepeatRule, // Сохраняем правило для цепочки
+		CreatedAt:   s.now(),
+		UpdatedAt:   s.now(),
+	}
+
+	_, err = s.repo.Create(ctx, nextTask)
+	return err
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\task\service_test.go
+Размер: 2,055 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+// MockRepository для перехвата вызовов
+type MockRepository struct {
+	Repository // встраиваем интерфейс
+	OnCreate   func(task *taskdomain.Task) (*taskdomain.Task, error)
+	OnUpdate   func(task *taskdomain.Task) (*taskdomain.Task, error)
+}
+
+func (m *MockRepository) Create(ctx context.Context, t *taskdomain.Task) (*taskdomain.Task, error) {
+	return m.OnCreate(t)
+}
+
+func (m *MockRepository) Update(ctx context.Context, t *taskdomain.Task) (*taskdomain.Task, error) {
+	return m.OnUpdate(t)
+}
+
+func TestService_Update_Recurring(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 4, 13, 12, 0, 0, 0, time.UTC)
+
+	// Счётчик созданных задач
+	createdCount := 0
+
+	repo := &MockRepository{
+		OnUpdate: func(task *taskdomain.Task) (*taskdomain.Task, error) {
+			// Имитируем возврат обновленной задачи из БД
+			return task, nil
+		},
+		OnCreate: func(task *taskdomain.Task) (*taskdomain.Task, error) {
+			createdCount++
+			return task, nil
+		},
+	}
+
+	svc := &Service{
+		repo: repo,
+		now:  func() time.Time { return now },
+	}
+
+	// 1. Тест: Обычная задача (без повтора) завершена -> новая НЕ создается
+	inputSimple := UpdateInput{Status: taskdomain.StatusDone, Title: "Simple"}
+	svc.Update(ctx, 1, inputSimple)
+	if createdCount != 0 {
+		t.Errorf("Expected 0 new tasks, got %d", createdCount)
+	}
+
+	// 2. Тест: Периодическая задача завершена -> новая создается
+	dueDate := now
+	inputRecurring := UpdateInput{
+		Title:      "Gym",
+		Status:     taskdomain.StatusDone,
+		RepeatRule: "d 1",
+		DueDate:    &dueDate,
+	}
+
+	svc.Update(ctx, 2, inputRecurring)
+
+	if createdCount != 1 {
+		t.Errorf("Expected 1 new task to be created for recurring rule, got %d", createdCount)
+	}
+}
+
+
+================================================================================
+📁 ПАПКА: BogdanPozhidaev/migrations/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: migrations\0001_create_tasks.up.sql
+Размер: 722 байт
+────────────────────────────────────────────────────────────────────────────────
+-- Если правишь существующий файл:
+CREATE TABLE IF NOT EXISTS tasks (
+    id BIGSERIAL PRIMARY KEY,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL,
+    due_date TIMESTAMPTZ,                -- Новое поле: когда нужно выполнить
+    repeat_rule TEXT NOT NULL DEFAULT '', -- Новое поле: правило
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Индекс для поиска задач на сегодня
+CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks (due_date);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks (status);
+
+================================================================================
+📁 ПАПКА: BogdanPozhidaev/pkg/
+================================================================================
+
+================================================================================
+📁 ПАПКА: BogdanPozhidaev/pkg\scheduler/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: pkg\scheduler\scheduler.go
+Размер: 6,282 байт
+────────────────────────────────────────────────────────────────────────────────
+package scheduler
+
+import (
+	"fmt"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+)
+
+const DateFormat = "20060102"
+
+func NextDate(now time.Time, dateStr string, repeat string) (string, error) {
+	if repeat == "" {
+		return "", fmt.Errorf("empty repeat rule")
+	}
+
+	date, err := time.Parse(DateFormat, dateStr)
+	if err != nil {
+		return "", fmt.Errorf("invalid date format: %w", err)
+	}
+
+	parts := strings.Fields(repeat)
+	ruleType := parts[0]
+
+	switch ruleType {
+	case "d": // Ежедневно: d <days>
+		return handleDaily(now, date, parts)
+	case "m": // Ежемесячно: m <day> [month,month]
+		return handleMonthly(now, date, parts)
+	case "even": // Четные дни
+		return handleEvenOdd(now, date, true)
+	case "odd": // Нечетные дни
+		return handleEvenOdd(now, date, false)
+	case "dates": // Конкретные даты: dates 20260501,20260510
+		return handleSpecificDates(now, parts)
+	default:
+		return "", fmt.Errorf("unsupported repeat rule type: %s", ruleType)
+	}
+}
+
+func handleEvenOdd(now time.Time, date time.Time, even bool) (string, error) {
+	// Определяем точку старта: нам нужно то, что наступит позже
+	start := now
+	if date.After(now) {
+		start = date
+	}
+
+	// Ищем, начиная со следующего дня от точки старта
+	candidate := start.AddDate(0, 0, 1)
+
+	// Проверяем ближайшие дни
+	for i := 0; i < 10; i++ {
+		isEven := candidate.Day()%2 == 0
+		if (even && isEven) || (!even && !isEven) {
+			return candidate.Format(DateFormat), nil
+		}
+		candidate = candidate.AddDate(0, 0, 1)
+	}
+	return "", fmt.Errorf("could not calculate even/odd date")
+}
+
+func handleSpecificDates(now time.Time, parts []string) (string, error) {
+	if len(parts) < 2 {
+		return "", fmt.Errorf("dates rule requires a list of dates")
+	}
+
+	dateStrings := strings.Split(parts[1], ",")
+	var validDates []time.Time
+
+	for _, ds := range dateStrings {
+		d, err := time.Parse(DateFormat, strings.TrimSpace(ds))
+		if err != nil {
+			continue // Или возвращаем ошибку, если формат критичен
+		}
+		if d.After(now) {
+			validDates = append(validDates, d)
+		}
+	}
+
+	if len(validDates) == 0 {
+		return "", fmt.Errorf("no future dates found in the list")
+	}
+
+	// Сортируем, чтобы взять самую раннюю из будущих
+	sort.Slice(validDates, func(i, j int) bool {
+		return validDates[i].Before(validDates[j])
+	})
+
+	return validDates[0].Format(DateFormat), nil
+}
+
+func handleMonthly(now time.Time, date time.Time, parts []string) (string, error) {
+	if len(parts) < 2 {
+		return "", fmt.Errorf("missing days for m rule")
+	}
+
+	// 1. Парсим дни (поддерживаем список: "1,10,31")
+	dayStrs := strings.Split(parts[1], ",")
+	daysMap := make(map[int]bool)
+	for _, d := range dayStrs {
+		day, err := strconv.Atoi(strings.TrimSpace(d))
+		if err != nil {
+			return "", fmt.Errorf("invalid day: %s", d)
+		}
+		daysMap[day] = true
+	}
+
+	// 2. Парсим месяцы (если есть: "m 1 1,6,12")
+	monthsMap := make(map[int]bool)
+	if len(parts) >= 3 {
+		monthStrs := strings.Split(parts[2], ",")
+		for _, m := range monthStrs {
+			month, err := strconv.Atoi(strings.TrimSpace(m))
+			if err != nil || month < 1 || month > 12 {
+				return "", fmt.Errorf("invalid month: %s", m)
+			}
+			monthsMap[month] = true
+		}
+	}
+
+	// 3. Перебор: ищем подходящий день в будущем
+	// Начинаем поиск с максимума между 'now' и 'date'
+	start := now
+	if date.After(now) {
+		start = date
+	}
+
+	// Итерируемся по дням (максимум на 2 года вперед)
+	for i := 1; i <= 730; i++ {
+		checkDate := start.AddDate(0, 0, i)
+
+		// Пропускаем, если дата всё еще не в будущем относительно исходной задачи
+		if !checkDate.After(date) {
+			continue
+		}
+
+		// Если указаны конкретные месяцы — проверяем их
+		if len(monthsMap) > 0 && !monthsMap[int(checkDate.Month())] {
+			continue
+		}
+
+		// Проверяем, подходит ли число месяца
+		if isDayValid(checkDate, daysMap) {
+			return checkDate.Format(DateFormat), nil
+		}
+	}
+
+	return "", fmt.Errorf("no suitable date found within 2 years")
+}
+
+// isDayValid проверяет, подходит ли число под правила (включая -1 и -2)
+func isDayValid(t time.Time, daysMap map[int]bool) bool {
+	// Прямое совпадение (например, 31 число)
+	if daysMap[t.Day()] {
+		return true
+	}
+
+	// Рассчитываем последний день текущего месяца для обработки -1 и -2
+	// (0-й день следующего месяца — это последний день текущего)
+	lastDayOfMonth := time.Date(t.Year(), t.Month()+1, 0, 0, 0, 0, 0, t.Location()).Day()
+
+	if daysMap[-1] && t.Day() == lastDayOfMonth {
+		return true
+	}
+	if daysMap[-2] && t.Day() == lastDayOfMonth-1 {
+		return true
+	}
+
+	return false
+}
+
+// handleDaily обрабатывает правило "d N" - каждый N дней
+func handleDaily(now time.Time, date time.Time, parts []string) (string, error) {
+	// Проверяем наличие интервала
+	if len(parts) < 2 {
+		return "", fmt.Errorf("missing days interval for d rule")
+	}
+
+	// Парсим интервал
+	days, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return "", fmt.Errorf("invalid days interval: %s", parts[1])
+	}
+
+	// Проверяем допустимый диапазон
+	if days < 1 || days > 400 {
+		return "", fmt.Errorf("days interval must be between 1 and 400, got %d", days)
+	}
+
+	// Начинаем с исходной даты
+	next := date
+
+	// Добавляем интервал хотя бы один раз
+	next = next.AddDate(0, 0, days)
+
+	// Если все еще <= now, продолжаем добавлять
+	for !next.After(now) {
+		next = next.AddDate(0, 0, days)
+	}
+
+	return next.Format(DateFormat), nil
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: pkg\scheduler\scheduler_test.go
+Размер: 1,864 байт
+────────────────────────────────────────────────────────────────────────────────
+package scheduler
+
+import (
+	"testing"
+	"time"
+)
+
+func TestNextDate(t *testing.T) {
+	now := time.Date(2026, 4, 13, 0, 0, 0, 0, time.UTC) // Понедельник
+
+	tests := []struct {
+		name    string
+		dateStr string
+		repeat  string
+		want    string
+		wantErr bool
+	}{
+		{
+			name:    "Daily - next day",
+			dateStr: "20260413",
+			repeat:  "d 1",
+			want:    "20260414",
+		},
+		{
+			name:    "Daily - after 5 days",
+			dateStr: "20260410",
+			repeat:  "d 5",
+			want:    "20260415",
+		},
+		{
+			name:    "Even - from odd day",
+			dateStr: "20260413",
+			repeat:  "even",
+			want:    "20260414",
+		},
+		{
+			name:    "Even - from even day (should be next even)",
+			dateStr: "20260414",
+			repeat:  "even",
+			want:    "20260416",
+		},
+		{
+			name:    "Specific dates - pick nearest",
+			dateStr: "20260413",
+			repeat:  "dates 20260501,20260415,20260410",
+			want:    "20260415",
+		},
+		{
+			name:    "Invalid rule",
+			dateStr: "20260413",
+			repeat:  "unknown 1",
+			wantErr: true,
+		},
+		{
+			name:    "Monthly - day 31 in short months",
+			dateStr: "20260131",
+			repeat:  "m 31",
+			// Январь(31) -> Февраль(нет 31) -> Март(31)
+			want: "20260531",
+		},
+		{
+			name:    "Daily - jump from past to future",
+			dateStr: "20200101", // Задача из далекого прошлого
+			repeat:  "d 1",
+			want:    "20260414", // Должна стать завтрашней относительно 13.04.2026
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := NextDate(now, tt.dateStr, tt.repeat)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("NextDate() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("NextDate() got = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+
+================================================================================
+СТАТИСТИКА ЭКСПОРТА
+================================================================================
+Всего обработано файлов: 22
+Всего пропущено файлов: 2
+Общий размер выходного файла: 53,918 байт

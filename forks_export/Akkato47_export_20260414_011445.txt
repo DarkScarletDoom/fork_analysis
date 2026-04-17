@@ -1,0 +1,2571 @@
+================================================================================
+ЭКСПОРТ РЕПОЗИТОРИЯ: Akkato47
+Путь: C:\Users\vladk\Desktop\test\forks\Akkato47
+Дата экспорта: 2026-04-14 01:14:45
+================================================================================
+
+
+================================================================================
+📁 ПАПКА: Akkato47/
+================================================================================
+
+[ПРОПУЩЕН] .dockerignore (бинарный/служебный/слишком большой)
+
+[ПРОПУЩЕН] .gitignore (бинарный/служебный/слишком большой)
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: Dockerfile
+Размер: 414 байт
+────────────────────────────────────────────────────────────────────────────────
+FROM golang:1.23.0-alpine AS builder
+
+WORKDIR /src
+
+RUN apk add --no-cache ca-certificates
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/taskservice ./cmd/api
+
+FROM alpine:3.21
+
+WORKDIR /app
+
+RUN apk add --no-cache ca-certificates
+
+COPY --from=builder /out/taskservice /app/taskservice
+
+EXPOSE 8080
+
+CMD ["/app/taskservice"]
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: README.md
+Размер: 7,760 байт
+────────────────────────────────────────────────────────────────────────────────
+# For reviewers 
+Ранее я разрабатывал сервис-аналог ticktick. И там сталкивался с большими проблемами в реализации реккурентности. Нашел стандарт для работы с календарем ICalendar и либы для работы с ним. В go есть пакет ical, который может предложить обширные настройки, но в рамках тестового было решено попробовать реализовать самому.
+Но для масштабирования, я бы сделал через ical, чтобы соответствовать стандарту. Это даст возможность интеграции с другими календарями(если это понадобится)
+
+Сейчас была реализована следующая логика:
+Если у задачи есть настройки периодичности, то она создается на 90 дней вперед. В дальнейшем, чтобы получить задачи за 90 дней, в GET мы "лениво" создаем эти задачи для запрошенного диапазона.
+
+Изначально было несколько идей:
+1) Создавать следующую задачу при выполнение и пропуске(так например реализовано в Microsoft TODO), но идея была отброшена, так как ни в интерфейсе, ни в задаче нет статуса ее выполнения
+2) Создать воркер, который будет раз в день создавать задачи. По мне такой подход показался архитектурно не правильным
+3) Ну и 3 вариант - это как сейчас(описано выше). Если я правильно понял, то так работают календари
+
+# Task Service
+
+Сервис для управления задачами с HTTP API на Go.
+
+## Требования
+
+- Go `1.23+`
+- Docker и Docker Compose
+
+## Быстрый запуск через Docker Compose
+
+```bash
+docker compose up --build
+```
+
+После запуска сервис будет доступен по адресу `http://localhost:8080`.
+
+Если `postgres` уже запускался ранее со старой схемой — пересоздай volume, чтобы миграции применились заново:
+
+```bash
+docker compose down -v && docker compose up --build
+```
+
+## Swagger
+
+```text
+http://localhost:8080/swagger/
+```
+
+OpenAPI JSON: `http://localhost:8080/swagger/openapi.json`
+
+---
+
+## API
+
+### Разовые задачи
+
+**Создать задачу**
+
+```bash
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Обход пациентов",
+    "description": "Палаты 10-15",
+    "status": "new",
+    "scheduled_date": "2026-06-15"
+  }'
+```
+
+**Получить список всех задач**
+
+```bash
+curl http://localhost:8080/api/v1/tasks
+```
+
+**Получить задачу по ID**
+
+```bash
+curl http://localhost:8080/api/v1/tasks/1
+```
+
+**Обновить задачу**
+
+```bash
+curl -X PUT http://localhost:8080/api/v1/tasks/1 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Обход пациентов",
+    "description": "Палаты 10-20",
+    "status": "in_progress"
+  }'
+```
+
+**Удалить задачу**
+
+```bash
+curl -X DELETE http://localhost:8080/api/v1/tasks/1
+```
+
+---
+
+### Периодические задачи
+
+Периодическая задача создаётся через тот же `POST /tasks`, но с полем `period`.
+В ответе возвращается массив всех сгенерированных экземпляров.
+
+#### Ежедневно (каждые N дней)
+
+```bash
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Утренний обзвон пациентов",
+    "description": "Уточнить самочувствие",
+    "scheduled_date": "2026-06-01",
+    "period": {
+      "type": "daily",
+      "interval": 1,
+      "end_date": "2026-06-10"
+    }
+  }'
+```
+
+```bash
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Формирование отчётности",
+    "scheduled_date": "2026-01-01",
+    "period": {
+      "type": "daily",
+      "interval": 7
+    }
+  }'
+```
+
+#### Ежемесячно (определённое число месяца)
+
+```bash
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Инвентаризация оборудования",
+    "scheduled_date": "2026-06-01",
+    "period": {
+      "type": "monthly",
+      "day_of_month": 15,
+      "end_date": "2026-12-31"
+    }
+  }'
+```
+
+#### На конкретные даты
+
+```bash
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Совещание отдела",
+    "scheduled_date": "2026-06-05",
+    "period": {
+      "type": "specific_dates",
+      "dates": ["2026-06-05", "2026-06-19", "2026-07-03"]
+    }
+  }'
+```
+
+#### Чётные / нечётные дни месяца
+
+```bash
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Проверка журналов",
+    "scheduled_date": "2026-06-01",
+    "period": {
+      "type": "even_odd",
+      "parity": "even",
+      "end_date": "2026-06-30"
+    }
+  }'
+```
+
+```bash
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Проверка журналов",
+    "scheduled_date": "2026-06-01",
+    "period": {
+      "type": "even_odd",
+      "parity": "odd",
+      "end_date": "2026-06-30"
+    }
+  }'
+```
+
+---
+
+### Фильтрация задач по дате
+
+```bash
+curl "http://localhost:8080/api/v1/tasks?from=2026-06-15&to=2026-06-15"
+
+curl "http://localhost:8080/api/v1/tasks?from=2026-06-10&to=2026-06-16"
+
+curl "http://localhost:8080/api/v1/tasks?from=2026-06-01"
+```
+
+---
+
+### Обновление периодической задачи (scope)
+
+```bash
+curl -X PUT "http://localhost:8080/api/v1/tasks/5?scope=this" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Обзвон пациентов (изменено)",
+    "status": "in_progress"
+  }'
+```
+
+```bash
+curl -X PUT "http://localhost:8080/api/v1/tasks/47?scope=this_and_following" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Обзвон пациентов (новое название)",
+    "status": "new"
+  }'
+```
+
+```bash
+curl -X PUT "http://localhost:8080/api/v1/tasks/5?scope=all" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Обзвон пациентов (переименовано)",
+    "status": "new"
+  }'
+```
+
+---
+
+### Удаление периодической задачи (scope)
+
+```bash
+curl -X DELETE "http://localhost:8080/api/v1/tasks/5?scope=this"
+```
+
+```bash
+curl -X DELETE "http://localhost:8080/api/v1/tasks/5?scope=this_and_following"
+```
+
+```bash
+curl -X DELETE "http://localhost:8080/api/v1/tasks/5?scope=all"
+```
+
+---
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: docker-compose.yml
+Размер: 1,102 байт
+────────────────────────────────────────────────────────────────────────────────
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: taskservice
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d taskservice"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations/0001_create_tasks.up.sql:/docker-entrypoint-initdb.d/001_create_tasks.sql:ro
+      - ./migrations/0002_create_task_templates_and_alter_tasks.up.sql:/docker-entrypoint-initdb.d/002_create_task_templates_and_alter_tasks.sql:ro
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      HTTP_ADDR: :8080
+      DATABASE_DSN: postgres://postgres:postgres@postgres:5432/taskservice?sslmode=disable
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+
+networks:
+  default:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 192.168.100.0/24
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: go.mod
+Размер: 441 байт
+────────────────────────────────────────────────────────────────────────────────
+module example.com/taskservice
+
+go 1.23.0
+
+require (
+	github.com/gorilla/mux v1.8.1
+	github.com/jackc/pgx/v5 v5.7.6
+)
+
+require (
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
+	golang.org/x/crypto v0.37.0 // indirect
+	golang.org/x/sync v0.13.0 // indirect
+	golang.org/x/text v0.24.0 // indirect
+)
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: go.sum
+Размер: 2,649 байт
+────────────────────────────────────────────────────────────────────────────────
+github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
+github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/gorilla/mux v1.8.1 h1:TuBL49tXwgrFYWhqrNgrUNEY92u81SPhu7sTdzQEiWY=
+github.com/gorilla/mux v1.8.1/go.mod h1:AKf9I4AEqPTmMytcMc0KkNouC66V3BtZ4qD5fmWSiMQ=
+github.com/jackc/pgpassfile v1.0.0 h1:/6Hmqy13Ss2zCq62VdNG8tM1wchn8zjSGOBJ6icpsIM=
+github.com/jackc/pgpassfile v1.0.0/go.mod h1:CEx0iS5ambNFdcRtxPj5JhEz+xB6uRky5eyVu/W2HEg=
+github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 h1:iCEnooe7UlwOQYpKFhBabPMi4aNAfoODPEFNiAnClxo=
+github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761/go.mod h1:5TJZWKEWniPve33vlWYSoGYefn3gLQRzjfDlhSJ9ZKM=
+github.com/jackc/pgx/v5 v5.7.6 h1:rWQc5FwZSPX58r1OQmkuaNicxdmExaEz5A2DO2hUuTk=
+github.com/jackc/pgx/v5 v5.7.6/go.mod h1:aruU7o91Tc2q2cFp5h4uP3f6ztExVpyVv88Xl/8Vl8M=
+github.com/jackc/puddle/v2 v2.2.2 h1:PR8nw+E/1w0GLuRFSmiioY6UooMp6KJv0/61nB7icHo=
+github.com/jackc/puddle/v2 v2.2.2/go.mod h1:vriiEXHvEE654aYKXXjOvZM39qJ0q+azkZFrfEOc3H4=
+github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
+github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
+github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
+github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UVUgZn+9EI=
+github.com/stretchr/testify v1.7.0/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
+github.com/stretchr/testify v1.8.1 h1:w7B6lhMri9wdJUVmEZPGGhZzrYTPvgJArz7wNPgYKsk=
+github.com/stretchr/testify v1.8.1/go.mod h1:w2LPCIKwWwSfY2zedu0+kehJoqGctiVI29o6fzry7u4=
+golang.org/x/crypto v0.37.0 h1:kJNSjF/Xp7kU0iB2Z+9viTPMW4EqqsrywMXLJOOsXSE=
+golang.org/x/crypto v0.37.0/go.mod h1:vg+k43peMZ0pUMhYmVAWysMK35e6ioLh3wB8ZCAfbVc=
+golang.org/x/sync v0.13.0 h1:AauUjRAJ9OSnvULf/ARrrVywoJDy0YS2AwQ98I37610=
+golang.org/x/sync v0.13.0/go.mod h1:1dzgHSNfp02xaA81J2MS99Qcpr2w7fw1gpm99rleRqA=
+golang.org/x/text v0.24.0 h1:dd5Bzh4yt5KYA8f9CJHCP4FB4D51c2c6JvN37xJJkJ0=
+golang.org/x/text v0.24.0/go.mod h1:L8rBsPeo2pSS+xqN0d5u2ikmjtmoJbDBT1b7nHvFCdU=
+gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
+gopkg.in/yaml.v3 v3.0.0-20200313102051-9f266ea9e77c/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
+gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+
+
+================================================================================
+📁 ПАПКА: Akkato47/cmd/
+================================================================================
+
+================================================================================
+📁 ПАПКА: Akkato47/cmd\api/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: cmd\api\main.go
+Размер: 2,421 байт
+────────────────────────────────────────────────────────────────────────────────
+package main
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	infrastructurepostgres "example.com/taskservice/internal/infrastructure/postgres"
+	postgresrepo "example.com/taskservice/internal/repository/postgres"
+	transporthttp "example.com/taskservice/internal/transport/http"
+	swaggerdocs "example.com/taskservice/internal/transport/http/docs"
+	httphandlers "example.com/taskservice/internal/transport/http/handlers"
+	"example.com/taskservice/internal/usecase/task"
+)
+
+func main() {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
+
+	cfg := loadConfig()
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	pool, err := infrastructurepostgres.Open(ctx, cfg.DatabaseDSN)
+	if err != nil {
+		logger.Error("open postgres", "error", err)
+		os.Exit(1)
+	}
+	defer pool.Close()
+
+	taskRepo := postgresrepo.New(pool)
+	templateRepo := postgresrepo.NewTemplateRepository(pool)
+	taskUsecase := task.NewService(taskRepo, templateRepo)
+	taskHandler := httphandlers.NewTaskHandler(taskUsecase)
+	docsHandler := swaggerdocs.NewHandler()
+	router := transporthttp.NewRouter(taskHandler, docsHandler)
+
+	server := &http.Server{
+		Addr:              cfg.HTTPAddr,
+		Handler:           router,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	go func() {
+		<-ctx.Done()
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			logger.Error("shutdown http server", "error", err)
+		}
+	}()
+
+	logger.Info("http server started", "addr", cfg.HTTPAddr)
+
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		logger.Error("listen and serve", "error", err)
+		os.Exit(1)
+	}
+}
+
+type config struct {
+	HTTPAddr    string
+	DatabaseDSN string
+}
+
+func loadConfig() config {
+	cfg := config{
+		HTTPAddr:    envOrDefault("HTTP_ADDR", ":8080"),
+		DatabaseDSN: envOrDefault("DATABASE_DSN", "postgres://postgres:postgres@localhost:5432/taskservice?sslmode=disable"),
+	}
+
+	if cfg.DatabaseDSN == "" {
+		panic(fmt.Errorf("DATABASE_DSN is required"))
+	}
+
+	return cfg
+}
+
+func envOrDefault(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+
+	return fallback
+}
+
+
+================================================================================
+📁 ПАПКА: Akkato47/internal/
+================================================================================
+
+================================================================================
+📁 ПАПКА: Akkato47/internal\domain/
+================================================================================
+
+================================================================================
+📁 ПАПКА: Akkato47/internal\domain\task/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\domain\task\errors.go
+Размер: 160 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import "errors"
+
+var (
+	ErrNotFound         = errors.New("task not found")
+	ErrTemplateNotFound = errors.New("task template not found")
+)
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\domain\task\period.go
+Размер: 3,407 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import (
+	"fmt"
+	"time"
+)
+
+type PeriodType string
+
+const (
+	PeriodTypeDaily         PeriodType = "daily"
+	PeriodTypeMonthly       PeriodType = "monthly"
+	PeriodTypeSpecificDates PeriodType = "specific_dates"
+	PeriodTypeEvenOdd       PeriodType = "even_odd"
+)
+
+type Parity string
+
+const (
+	ParityEven Parity = "even"
+	ParityOdd  Parity = "odd"
+)
+
+type Period struct {
+	Type       PeriodType
+	Interval   int
+	DayOfMonth int
+	Dates      []time.Time
+	Parity     Parity
+}
+
+func (p Period) Valid() error {
+	switch p.Type {
+	case PeriodTypeDaily:
+		if p.Interval < 1 {
+			return fmt.Errorf("daily: interval must be >= 1")
+		}
+	case PeriodTypeMonthly:
+		if p.DayOfMonth < 1 || p.DayOfMonth > 30 {
+			return fmt.Errorf("monthly: day_of_month must be between 1 and 30")
+		}
+	case PeriodTypeSpecificDates:
+		if len(p.Dates) == 0 {
+			return fmt.Errorf("specific_dates: at least one date is required")
+		}
+	case PeriodTypeEvenOdd:
+		if p.Parity != ParityEven && p.Parity != ParityOdd {
+			return fmt.Errorf("even_odd: parity must be 'even' or 'odd'")
+		}
+	default:
+		return fmt.Errorf("unknown period type: %q", p.Type)
+	}
+
+	return nil
+}
+
+func (p Period) Compute(from, to, anchor time.Time) []time.Time {
+	from = TruncateToDate(from)
+	to = TruncateToDate(to)
+	anchor = TruncateToDate(anchor)
+
+	switch p.Type {
+	case PeriodTypeDaily:
+		return computeDaily(from, to, anchor, p.Interval)
+	case PeriodTypeMonthly:
+		return computeMonthly(from, to, p.DayOfMonth)
+	case PeriodTypeSpecificDates:
+		return computeSpecificDates(from, to, p.Dates)
+	case PeriodTypeEvenOdd:
+		return computeEvenOdd(from, to, p.Parity)
+	default:
+		return nil
+	}
+}
+
+func computeDaily(from, to, anchor time.Time, interval int) []time.Time {
+	daysDiff := int(from.Sub(anchor).Hours() / 24)
+
+	rem := daysDiff % interval
+	if rem < 0 {
+		rem += interval
+	}
+
+	var firstAligned time.Time
+	if rem == 0 {
+		firstAligned = from
+	} else {
+		firstAligned = from.AddDate(0, 0, interval-rem)
+	}
+
+	var dates []time.Time
+	for d := firstAligned; !d.After(to); d = d.AddDate(0, 0, interval) {
+		dates = append(dates, d)
+	}
+
+	return dates
+}
+
+func computeMonthly(from, to time.Time, dayOfMonth int) []time.Time {
+	var dates []time.Time
+
+	cur := time.Date(from.Year(), from.Month(), dayOfMonth, 0, 0, 0, 0, time.UTC)
+	if cur.Before(from) {
+		cur = time.Date(cur.Year(), cur.Month()+1, dayOfMonth, 0, 0, 0, 0, time.UTC)
+	}
+
+	for !cur.After(to) {
+		if cur.Day() == dayOfMonth {
+			dates = append(dates, cur)
+		}
+		cur = time.Date(cur.Year(), cur.Month()+1, dayOfMonth, 0, 0, 0, 0, time.UTC)
+	}
+
+	return dates
+}
+
+func computeSpecificDates(from, to time.Time, dates []time.Time) []time.Time {
+	var result []time.Time
+	for _, d := range dates {
+		d = TruncateToDate(d)
+		if !d.Before(from) && !d.After(to) {
+			result = append(result, d)
+		}
+	}
+
+	return result
+}
+
+func computeEvenOdd(from, to time.Time, parity Parity) []time.Time {
+	var dates []time.Time
+	for d := from; !d.After(to); d = d.AddDate(0, 0, 1) {
+		day := d.Day()
+		if parity == ParityEven && day%2 == 0 {
+			dates = append(dates, d)
+		} else if parity == ParityOdd && day%2 != 0 {
+			dates = append(dates, d)
+		}
+	}
+
+	return dates
+}
+
+func TruncateToDate(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\domain\task\task.go
+Размер: 807 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import "time"
+
+type Status string
+
+const (
+	StatusNew        Status = "new"
+	StatusInProgress Status = "in_progress"
+	StatusDone       Status = "done"
+)
+
+type Task struct {
+	ID            int64     `json:"id"`
+	Title         string    `json:"title"`
+	Description   string    `json:"description"`
+	Status        Status    `json:"status"`
+	TemplateID    *int64    `json:"template_id,omitempty"`
+	ScheduledDate time.Time `json:"scheduled_date"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+type TaskPatch struct {
+	Title       string
+	Description string
+	Status      Status
+}
+
+func (s Status) Valid() bool {
+	switch s {
+	case StatusNew, StatusInProgress, StatusDone:
+		return true
+	default:
+		return false
+	}
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\domain\task\template.go
+Размер: 240 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import "time"
+
+type Template struct {
+	ID          int64
+	Title       string
+	Description string
+	Period      Period
+	StartDate   time.Time
+	EndDate     *time.Time
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+
+================================================================================
+📁 ПАПКА: Akkato47/internal\infrastructure/
+================================================================================
+
+================================================================================
+📁 ПАПКА: Akkato47/internal\infrastructure\postgres/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\infrastructure\postgres\pool.go
+Размер: 512 байт
+────────────────────────────────────────────────────────────────────────────────
+package postgres
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+func Open(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
+	if dsn == "" {
+		return nil, fmt.Errorf("database dsn is empty")
+	}
+
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, err
+	}
+
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, err
+	}
+
+	return pool, nil
+}
+
+
+================================================================================
+📁 ПАПКА: Akkato47/internal\repository/
+================================================================================
+
+================================================================================
+📁 ПАПКА: Akkato47/internal\repository\postgres/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\repository\postgres\task_repository.go
+Размер: 7,004 байт
+────────────────────────────────────────────────────────────────────────────────
+package postgres
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type Repository struct {
+	pool *pgxpool.Pool
+}
+
+func New(pool *pgxpool.Pool) *Repository {
+	return &Repository{pool: pool}
+}
+
+func (r *Repository) Create(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error) {
+	const query = `
+		INSERT INTO tasks (title, description, status, template_id, scheduled_date, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id, title, description, status, template_id, scheduled_date, created_at, updated_at
+	`
+
+	row := r.pool.QueryRow(ctx, query,
+		task.Title, task.Description, task.Status,
+		task.TemplateID, task.ScheduledDate,
+		task.CreatedAt, task.UpdatedAt,
+	)
+
+	created, err := scanTask(row)
+	if err != nil {
+		return nil, err
+	}
+
+	return created, nil
+}
+
+func (r *Repository) CreateBatch(ctx context.Context, tasks []*taskdomain.Task) ([]taskdomain.Task, error) {
+	if len(tasks) == 0 {
+		return nil, nil
+	}
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	const query = `
+		INSERT INTO tasks (title, description, status, template_id, scheduled_date, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id, title, description, status, template_id, scheduled_date, created_at, updated_at
+	`
+
+	result := make([]taskdomain.Task, 0, len(tasks))
+	for _, t := range tasks {
+		row := tx.QueryRow(ctx, query,
+			t.Title, t.Description, t.Status,
+			t.TemplateID, t.ScheduledDate,
+			t.CreatedAt, t.UpdatedAt,
+		)
+
+		created, err := scanTask(row)
+		if err != nil {
+			return nil, err
+		}
+
+		result = append(result, *created)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+func (r *Repository) CreateBatchIgnoreDuplicates(ctx context.Context, tasks []*taskdomain.Task) error {
+	if len(tasks) == 0 {
+		return nil
+	}
+
+	const query = `
+		INSERT INTO tasks (title, description, status, template_id, scheduled_date, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (template_id, scheduled_date) WHERE template_id IS NOT NULL DO NOTHING
+	`
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	for _, t := range tasks {
+		if _, err := tx.Exec(ctx, query,
+			t.Title, t.Description, t.Status,
+			t.TemplateID, t.ScheduledDate,
+			t.CreatedAt, t.UpdatedAt,
+		); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit(ctx)
+}
+
+func (r *Repository) GetByID(ctx context.Context, id int64) (*taskdomain.Task, error) {
+	const query = `
+		SELECT id, title, description, status, template_id, scheduled_date, created_at, updated_at
+		FROM tasks
+		WHERE id = $1
+	`
+
+	row := r.pool.QueryRow(ctx, query, id)
+	found, err := scanTask(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, taskdomain.ErrNotFound
+		}
+
+		return nil, err
+	}
+
+	return found, nil
+}
+
+func (r *Repository) Update(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error) {
+	const query = `
+		UPDATE tasks
+		SET title         = $1,
+		    description   = $2,
+		    status        = $3,
+		    updated_at    = $4
+		WHERE id = $5
+		RETURNING id, title, description, status, template_id, scheduled_date, created_at, updated_at
+	`
+
+	row := r.pool.QueryRow(ctx, query,
+		task.Title, task.Description, task.Status,
+		task.UpdatedAt, task.ID,
+	)
+
+	updated, err := scanTask(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, taskdomain.ErrNotFound
+		}
+
+		return nil, err
+	}
+
+	return updated, nil
+}
+
+func (r *Repository) UpdateByTemplateID(ctx context.Context, templateID int64, patch taskdomain.TaskPatch, now time.Time) error {
+	const query = `
+		UPDATE tasks
+		SET title       = $1,
+		    description = $2,
+		    status      = $3,
+		    updated_at  = $4
+		WHERE template_id = $5
+	`
+
+	_, err := r.pool.Exec(ctx, query, patch.Title, patch.Description, string(patch.Status), now, templateID)
+
+	return err
+}
+
+func (r *Repository) UpdateByTemplateIDFromDate(ctx context.Context, templateID int64, fromDate time.Time, patch taskdomain.TaskPatch, now time.Time) error {
+	const query = `
+		UPDATE tasks
+		SET title       = $1,
+		    description = $2,
+		    status      = $3,
+		    updated_at  = $4
+		WHERE template_id = $5
+		  AND scheduled_date >= $6
+	`
+
+	_, err := r.pool.Exec(ctx, query, patch.Title, patch.Description, string(patch.Status), now, templateID, fromDate)
+
+	return err
+}
+
+func (r *Repository) Delete(ctx context.Context, id int64) error {
+	const query = `DELETE FROM tasks WHERE id = $1`
+
+	result, err := r.pool.Exec(ctx, query, id)
+	if err != nil {
+		return err
+	}
+
+	if result.RowsAffected() == 0 {
+		return taskdomain.ErrNotFound
+	}
+
+	return nil
+}
+
+func (r *Repository) DeleteByTemplateID(ctx context.Context, templateID int64) error {
+	const query = `DELETE FROM tasks WHERE template_id = $1`
+
+	_, err := r.pool.Exec(ctx, query, templateID)
+
+	return err
+}
+
+func (r *Repository) DeleteByTemplateIDFromDate(ctx context.Context, templateID int64, fromDate time.Time) error {
+	const query = `DELETE FROM tasks WHERE template_id = $1 AND scheduled_date >= $2`
+
+	_, err := r.pool.Exec(ctx, query, templateID, fromDate)
+
+	return err
+}
+
+func (r *Repository) List(ctx context.Context, from, to *time.Time) ([]taskdomain.Task, error) {
+	query := `
+		SELECT id, title, description, status, template_id, scheduled_date, created_at, updated_at
+		FROM tasks
+	`
+
+	args := make([]any, 0, 2)
+
+	switch {
+	case from != nil && to != nil:
+		query += ` WHERE scheduled_date >= $1 AND scheduled_date <= $2`
+		args = append(args, from, to)
+	case from != nil:
+		query += ` WHERE scheduled_date >= $1`
+		args = append(args, from)
+	case to != nil:
+		query += ` WHERE scheduled_date <= $1`
+		args = append(args, to)
+	}
+
+	query += ` ORDER BY scheduled_date ASC NULLS LAST, id DESC`
+
+	rows, err := r.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	tasks := make([]taskdomain.Task, 0)
+	for rows.Next() {
+		task, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+
+		tasks = append(tasks, *task)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return tasks, nil
+}
+
+type taskScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanTask(scanner taskScanner) (*taskdomain.Task, error) {
+	var (
+		task   taskdomain.Task
+		status string
+	)
+
+	if err := scanner.Scan(
+		&task.ID,
+		&task.Title,
+		&task.Description,
+		&status,
+		&task.TemplateID,
+		&task.ScheduledDate,
+		&task.CreatedAt,
+		&task.UpdatedAt,
+	); err != nil {
+		return nil, err
+	}
+
+	task.Status = taskdomain.Status(status)
+
+	return &task, nil
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\repository\postgres\template_repository.go
+Размер: 5,346 байт
+────────────────────────────────────────────────────────────────────────────────
+package postgres
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type TemplateRepository struct {
+	pool *pgxpool.Pool
+}
+
+func NewTemplateRepository(pool *pgxpool.Pool) *TemplateRepository {
+	return &TemplateRepository{pool: pool}
+}
+
+func (r *TemplateRepository) Create(ctx context.Context, t *taskdomain.Template) (*taskdomain.Template, error) {
+	config, err := marshalPeriodConfig(t.Period)
+	if err != nil {
+		return nil, err
+	}
+
+	const query = `
+		INSERT INTO task_templates (title, description, period_type, period_config, start_date, end_date, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		RETURNING id, title, description, period_type, period_config, start_date, end_date, created_at, updated_at
+	`
+
+	row := r.pool.QueryRow(ctx, query,
+		t.Title, t.Description,
+		string(t.Period.Type), config,
+		t.StartDate, t.EndDate,
+		t.CreatedAt, t.UpdatedAt,
+	)
+
+	return scanTemplate(row)
+}
+
+func (r *TemplateRepository) GetByID(ctx context.Context, id int64) (*taskdomain.Template, error) {
+	const query = `
+		SELECT id, title, description, period_type, period_config, start_date, end_date, created_at, updated_at
+		FROM task_templates
+		WHERE id = $1
+	`
+
+	row := r.pool.QueryRow(ctx, query, id)
+	tmpl, err := scanTemplate(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, taskdomain.ErrTemplateNotFound
+		}
+
+		return nil, err
+	}
+
+	return tmpl, nil
+}
+
+func (r *TemplateRepository) Update(ctx context.Context, t *taskdomain.Template) (*taskdomain.Template, error) {
+	config, err := marshalPeriodConfig(t.Period)
+	if err != nil {
+		return nil, err
+	}
+
+	const query = `
+		UPDATE task_templates
+		SET title         = $1,
+		    description   = $2,
+		    period_type   = $3,
+		    period_config = $4,
+		    start_date    = $5,
+		    end_date      = $6,
+		    updated_at    = $7
+		WHERE id = $8
+		RETURNING id, title, description, period_type, period_config, start_date, end_date, created_at, updated_at
+	`
+
+	row := r.pool.QueryRow(ctx, query,
+		t.Title, t.Description,
+		string(t.Period.Type), config,
+		t.StartDate, t.EndDate,
+		t.UpdatedAt, t.ID,
+	)
+
+	tmpl, err := scanTemplate(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, taskdomain.ErrTemplateNotFound
+		}
+
+		return nil, err
+	}
+
+	return tmpl, nil
+}
+
+func (r *TemplateRepository) ListActive(ctx context.Context) ([]taskdomain.Template, error) {
+	const query = `
+		SELECT id, title, description, period_type, period_config, start_date, end_date, created_at, updated_at
+		FROM task_templates
+		WHERE end_date IS NULL OR end_date >= CURRENT_DATE
+		ORDER BY id
+	`
+
+	rows, err := r.pool.Query(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var templates []taskdomain.Template
+	for rows.Next() {
+		tmpl, err := scanTemplate(rows)
+		if err != nil {
+			return nil, err
+		}
+
+		templates = append(templates, *tmpl)
+	}
+
+	return templates, rows.Err()
+}
+
+func (r *TemplateRepository) Delete(ctx context.Context, id int64) error {
+	const query = `DELETE FROM task_templates WHERE id = $1`
+
+	result, err := r.pool.Exec(ctx, query, id)
+	if err != nil {
+		return err
+	}
+
+	if result.RowsAffected() == 0 {
+		return taskdomain.ErrTemplateNotFound
+	}
+
+	return nil
+}
+
+type periodConfigJSON struct {
+	Interval   int      `json:"interval,omitempty"`
+	DayOfMonth int      `json:"day_of_month,omitempty"`
+	Dates      []string `json:"dates,omitempty"`
+	Parity     string   `json:"parity,omitempty"`
+}
+
+func marshalPeriodConfig(p taskdomain.Period) ([]byte, error) {
+	cfg := periodConfigJSON{
+		Interval:   p.Interval,
+		DayOfMonth: p.DayOfMonth,
+		Parity:     string(p.Parity),
+	}
+
+	for _, d := range p.Dates {
+		cfg.Dates = append(cfg.Dates, d.UTC().Format("2006-01-02"))
+	}
+
+	return json.Marshal(cfg)
+}
+
+func unmarshalPeriodConfig(periodType taskdomain.PeriodType, raw []byte) (taskdomain.Period, error) {
+	var cfg periodConfigJSON
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return taskdomain.Period{}, err
+	}
+
+	p := taskdomain.Period{
+		Type:       periodType,
+		Interval:   cfg.Interval,
+		DayOfMonth: cfg.DayOfMonth,
+		Parity:     taskdomain.Parity(cfg.Parity),
+	}
+
+	for _, s := range cfg.Dates {
+		d, err := time.Parse("2006-01-02", s)
+		if err != nil {
+			return taskdomain.Period{}, err
+		}
+
+		p.Dates = append(p.Dates, d.UTC())
+	}
+
+	return p, nil
+}
+
+type templateScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanTemplate(scanner templateScanner) (*taskdomain.Template, error) {
+	var (
+		tmpl       taskdomain.Template
+		periodType string
+		configRaw  []byte
+		startDate  time.Time
+		endDate    *time.Time
+	)
+
+	if err := scanner.Scan(
+		&tmpl.ID,
+		&tmpl.Title,
+		&tmpl.Description,
+		&periodType,
+		&configRaw,
+		&startDate,
+		&endDate,
+		&tmpl.CreatedAt,
+		&tmpl.UpdatedAt,
+	); err != nil {
+		return nil, err
+	}
+
+	tmpl.StartDate = startDate.UTC()
+	tmpl.EndDate = endDate
+
+	period, err := unmarshalPeriodConfig(taskdomain.PeriodType(periodType), configRaw)
+	if err != nil {
+		return nil, err
+	}
+
+	tmpl.Period = period
+
+	return &tmpl, nil
+}
+
+
+================================================================================
+📁 ПАПКА: Akkato47/internal\transport/
+================================================================================
+
+================================================================================
+📁 ПАПКА: Akkato47/internal\transport\http/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\router.go
+Размер: 1,099 байт
+────────────────────────────────────────────────────────────────────────────────
+package transporthttp
+
+import (
+	"net/http"
+
+	"github.com/gorilla/mux"
+
+	swaggerdocs "example.com/taskservice/internal/transport/http/docs"
+	httphandlers "example.com/taskservice/internal/transport/http/handlers"
+)
+
+func NewRouter(taskHandler *httphandlers.TaskHandler, docsHandler *swaggerdocs.Handler) *mux.Router {
+	router := mux.NewRouter().StrictSlash(true)
+
+	router.HandleFunc("/swagger/openapi.json", docsHandler.ServeSpec).Methods(http.MethodGet)
+	router.HandleFunc("/swagger/", docsHandler.ServeUI).Methods(http.MethodGet)
+	router.HandleFunc("/swagger", docsHandler.RedirectToUI).Methods(http.MethodGet)
+
+	api := router.PathPrefix("/api/v1").Subrouter()
+
+	api.HandleFunc("/tasks", taskHandler.Create).Methods(http.MethodPost)
+	api.HandleFunc("/tasks", taskHandler.List).Methods(http.MethodGet)
+	api.HandleFunc("/tasks/{id:[0-9]+}", taskHandler.GetByID).Methods(http.MethodGet)
+	api.HandleFunc("/tasks/{id:[0-9]+}", taskHandler.Update).Methods(http.MethodPut)
+	api.HandleFunc("/tasks/{id:[0-9]+}", taskHandler.Delete).Methods(http.MethodDelete)
+
+	return router
+}
+
+
+================================================================================
+📁 ПАПКА: Akkato47/internal\transport\http\docs/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\docs\handler.go
+Размер: 1,779 байт
+────────────────────────────────────────────────────────────────────────────────
+package docs
+
+import (
+	"embed"
+	"net/http"
+)
+
+//go:embed openapi.json
+var openAPISpec embed.FS
+
+type Handler struct {
+	spec []byte
+}
+
+func NewHandler() *Handler {
+	spec, err := openAPISpec.ReadFile("openapi.json")
+	if err != nil {
+		panic(err)
+	}
+
+	return &Handler{spec: spec}
+}
+
+func (h *Handler) ServeSpec(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+
+	_, _ = w.Write(h.spec)
+}
+
+func (h *Handler) ServeUI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+
+	_, _ = w.Write([]byte(swaggerUIHTML))
+}
+
+func (h *Handler) RedirectToUI(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "/swagger/", http.StatusMovedPermanently)
+}
+
+var swaggerUIHTML = []byte(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Task Service Swagger</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+  <style>
+    body { margin: 0; background: #f6f7fb; }
+    #swagger-ui { max-width: 1440px; margin: 0 auto; }
+  </style>
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js" crossorigin></script>
+  <script>
+    window.onload = function() {
+      window.ui = SwaggerUIBundle({
+        url: '/swagger/openapi.json',
+        dom_id: '#swagger-ui',
+        deepLinking: true,
+        presets: [SwaggerUIBundle.presets.apis],
+        layout: 'BaseLayout'
+      });
+    };
+  </script>
+</body>
+</html>`)
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\docs\openapi.json
+Размер: 6,214 байт
+────────────────────────────────────────────────────────────────────────────────
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Task Service API",
+    "version": "1.0.0",
+    "description": "CRUD API for tasks built with clean architecture."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8080"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Tasks",
+      "description": "Operations with tasks"
+    }
+  ],
+  "paths": {
+    "/api/v1/tasks": {
+      "get": {
+        "tags": ["Tasks"],
+        "summary": "List tasks",
+        "responses": {
+          "200": {
+            "description": "Task list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/Task" }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["Tasks"],
+        "summary": "Create task",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateTaskRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created task",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Task" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/api/v1/tasks/{id}": {
+      "get": {
+        "tags": ["Tasks"],
+        "summary": "Get task by ID",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Task",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Task" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "put": {
+        "tags": ["Tasks"],
+        "summary": "Update task",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/UpdateTaskRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated task",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Task" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["Tasks"],
+        "summary": "Delete task",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "responses": {
+          "204": { "description": "Deleted" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    }
+  },
+  "components": {
+    "responses": {
+      "BadRequest": {
+        "description": "Bad request",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Resource not found",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "CreateTaskRequest": {
+        "type": "object",
+        "required": ["title"],
+        "properties": {
+          "title": {
+            "type": "string",
+            "example": "Prepare release"
+          },
+          "description": {
+            "type": "string",
+            "example": "Collect release notes and check migrations"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["new", "in_progress", "done"],
+            "example": "new"
+          }
+        }
+      },
+      "UpdateTaskRequest": {
+        "type": "object",
+        "required": ["title", "status"],
+        "properties": {
+          "title": {
+            "type": "string",
+            "example": "Prepare release"
+          },
+          "description": {
+            "type": "string",
+            "example": "Collect release notes and check migrations"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["new", "in_progress", "done"],
+            "example": "in_progress"
+          }
+        }
+      },
+      "Task": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "format": "int64", "example": 1 },
+          "title": { "type": "string", "example": "Prepare release" },
+          "description": {
+            "type": "string",
+            "example": "Collect release notes and check migrations"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["new", "in_progress", "done"],
+            "example": "new"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-03-24T00:00:00Z"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-03-24T00:00:00Z"
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": { "type": "string", "example": "task not found" }
+        }
+      }
+    }
+  }
+}
+
+
+================================================================================
+📁 ПАПКА: Akkato47/internal\transport\http\handlers/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\handlers\dto.go
+Размер: 2,815 байт
+────────────────────────────────────────────────────────────────────────────────
+package handlers
+
+import (
+	"fmt"
+	"time"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+	taskusecase "example.com/taskservice/internal/usecase/task"
+)
+
+const dateLayout = "2006-01-02"
+
+// taskMutationDTO is the request body for Create and Update.
+type taskMutationDTO struct {
+	Title         string            `json:"title"`
+	Description   string            `json:"description"`
+	Status        taskdomain.Status `json:"status"`
+	ScheduledDate string            `json:"scheduled_date"` // "YYYY-MM-DD", required
+	Period        *periodDTO        `json:"period,omitempty"`
+}
+
+// periodDTO carries the recurrence rule from the client.
+// StartDate is taken from the parent taskMutationDTO.ScheduledDate.
+type periodDTO struct {
+	Type       taskdomain.PeriodType `json:"type"`
+	Interval   int                   `json:"interval,omitempty"`
+	DayOfMonth int                   `json:"day_of_month,omitempty"`
+	Dates      []string              `json:"dates,omitempty"` // "YYYY-MM-DD"
+	Parity     taskdomain.Parity     `json:"parity,omitempty"`
+	EndDate    *string               `json:"end_date,omitempty"`
+}
+
+// taskDTO is the response representation of a single task.
+type taskDTO struct {
+	ID            int64             `json:"id"`
+	Title         string            `json:"title"`
+	Description   string            `json:"description"`
+	Status        taskdomain.Status `json:"status"`
+	TemplateID    *int64            `json:"template_id,omitempty"`
+	ScheduledDate string            `json:"scheduled_date"` // "YYYY-MM-DD"
+	CreatedAt     time.Time         `json:"created_at"`
+	UpdatedAt     time.Time         `json:"updated_at"`
+}
+
+func newTaskDTO(task *taskdomain.Task) taskDTO {
+	return taskDTO{
+		ID:            task.ID,
+		Title:         task.Title,
+		Description:   task.Description,
+		Status:        task.Status,
+		TemplateID:    task.TemplateID,
+		ScheduledDate: task.ScheduledDate.Format(dateLayout),
+		CreatedAt:     task.CreatedAt,
+		UpdatedAt:     task.UpdatedAt,
+	}
+}
+
+// toPeriodInput converts the DTO into a use-case input, parsing date strings.
+func (p *periodDTO) toPeriodInput() (*taskusecase.PeriodInput, error) {
+	if p == nil {
+		return nil, nil
+	}
+
+	input := &taskusecase.PeriodInput{
+		Type:       p.Type,
+		Interval:   p.Interval,
+		DayOfMonth: p.DayOfMonth,
+		Parity:     p.Parity,
+	}
+
+	if p.EndDate != nil {
+		endDate, err := time.Parse(dateLayout, *p.EndDate)
+		if err != nil {
+			return nil, fmt.Errorf("period end_date: %w", err)
+		}
+
+		t := endDate.UTC()
+		input.EndDate = &t
+	}
+
+	for _, s := range p.Dates {
+		d, err := time.Parse(dateLayout, s)
+		if err != nil {
+			return nil, fmt.Errorf("period dates: %w", err)
+		}
+
+		input.Dates = append(input.Dates, d.UTC())
+	}
+
+	return input, nil
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\transport\http\handlers\task_handler.go
+Размер: 5,079 байт
+────────────────────────────────────────────────────────────────────────────────
+package handlers
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strconv"
+	"time"
+
+	"github.com/gorilla/mux"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+	taskusecase "example.com/taskservice/internal/usecase/task"
+)
+
+type TaskHandler struct {
+	usecase taskusecase.Usecase
+}
+
+func NewTaskHandler(usecase taskusecase.Usecase) *TaskHandler {
+	return &TaskHandler{usecase: usecase}
+}
+
+func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
+	var req taskMutationDTO
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	scheduledDate, err := time.Parse(dateLayout, req.ScheduledDate)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, errors.New("scheduled_date: invalid format, expected YYYY-MM-DD"))
+		return
+	}
+
+	periodInput, err := req.Period.toPeriodInput()
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	tasks, err := h.usecase.Create(r.Context(), taskusecase.CreateInput{
+		Title:         req.Title,
+		Description:   req.Description,
+		Status:        req.Status,
+		ScheduledDate: scheduledDate.UTC(),
+		Period:        periodInput,
+	})
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	response := make([]taskDTO, 0, len(tasks))
+	for i := range tasks {
+		response = append(response, newTaskDTO(&tasks[i]))
+	}
+
+	writeJSON(w, http.StatusCreated, response)
+}
+
+func (h *TaskHandler) GetByID(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	task, err := h.usecase.GetByID(r.Context(), id)
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, newTaskDTO(task))
+}
+
+func (h *TaskHandler) Update(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	var req taskMutationDTO
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	scope := taskusecase.Scope(r.URL.Query().Get("scope"))
+
+	updated, err := h.usecase.Update(r.Context(), id, taskusecase.UpdateInput{
+		Title:       req.Title,
+		Description: req.Description,
+		Status:      req.Status,
+		Scope:       scope,
+	})
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, newTaskDTO(updated))
+}
+
+func (h *TaskHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	id, err := getIDFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	scope := taskusecase.Scope(r.URL.Query().Get("scope"))
+
+	if err := h.usecase.Delete(r.Context(), id, scope); err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
+	from, err := parseDateParam(r, "from")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	to, err := parseDateParam(r, "to")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	tasks, err := h.usecase.List(r.Context(), taskusecase.ListInput{
+		From: from,
+		To:   to,
+	})
+	if err != nil {
+		writeUsecaseError(w, err)
+		return
+	}
+
+	response := make([]taskDTO, 0, len(tasks))
+	for i := range tasks {
+		response = append(response, newTaskDTO(&tasks[i]))
+	}
+
+	writeJSON(w, http.StatusOK, response)
+}
+
+func parseDateParam(r *http.Request, name string) (*time.Time, error) {
+	raw := r.URL.Query().Get(name)
+	if raw == "" {
+		return nil, nil
+	}
+
+	t, err := time.Parse(dateLayout, raw)
+	if err != nil {
+		return nil, errors.New(name + ": invalid date format, expected YYYY-MM-DD")
+	}
+
+	t = t.UTC()
+
+	return &t, nil
+}
+
+func getIDFromRequest(r *http.Request) (int64, error) {
+	rawID := mux.Vars(r)["id"]
+	if rawID == "" {
+		return 0, errors.New("missing task id")
+	}
+
+	id, err := strconv.ParseInt(rawID, 10, 64)
+	if err != nil {
+		return 0, errors.New("invalid task id")
+	}
+
+	if id <= 0 {
+		return 0, errors.New("invalid task id")
+	}
+
+	return id, nil
+}
+
+func decodeJSON(r *http.Request, dst any) error {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+
+	if err := decoder.Decode(dst); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func writeUsecaseError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, taskdomain.ErrNotFound):
+		writeError(w, http.StatusNotFound, err)
+	case errors.Is(err, taskusecase.ErrInvalidInput):
+		writeError(w, http.StatusBadRequest, err)
+	default:
+		writeError(w, http.StatusInternalServerError, err)
+	}
+}
+
+func writeError(w http.ResponseWriter, status int, err error) {
+	writeJSON(w, status, map[string]string{
+		"error": err.Error(),
+	})
+}
+
+func writeJSON(w http.ResponseWriter, status int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+
+================================================================================
+📁 ПАПКА: Akkato47/internal\usecase/
+================================================================================
+
+================================================================================
+📁 ПАПКА: Akkato47/internal\usecase\task/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\task\errors.go
+Размер: 91 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import "errors"
+
+var ErrInvalidInput = errors.New("invalid task input")
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\task\ports.go
+Размер: 2,717 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import (
+	"context"
+	"time"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+type Scope string
+
+const (
+	ScopeThis             Scope = "this"
+	ScopeThisAndFollowing Scope = "this_and_following"
+	ScopeAll              Scope = "all"
+)
+
+func (s Scope) valid() bool {
+	switch s {
+	case ScopeThis, ScopeThisAndFollowing, ScopeAll:
+		return true
+	default:
+		return false
+	}
+}
+
+type PeriodInput struct {
+	Type       taskdomain.PeriodType
+	Interval   int
+	DayOfMonth int
+	Dates      []time.Time
+	Parity     taskdomain.Parity
+	EndDate    *time.Time
+}
+
+type CreateInput struct {
+	Title         string
+	Description   string
+	Status        taskdomain.Status
+	ScheduledDate time.Time
+	Period        *PeriodInput
+}
+
+type UpdateInput struct {
+	Title       string
+	Description string
+	Status      taskdomain.Status
+	Scope       Scope
+}
+
+type ListInput struct {
+	From *time.Time
+	To   *time.Time
+}
+
+type Repository interface {
+	Create(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error)
+	CreateBatch(ctx context.Context, tasks []*taskdomain.Task) ([]taskdomain.Task, error)
+	CreateBatchIgnoreDuplicates(ctx context.Context, tasks []*taskdomain.Task) error
+	GetByID(ctx context.Context, id int64) (*taskdomain.Task, error)
+	Update(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error)
+	UpdateByTemplateID(ctx context.Context, templateID int64, patch taskdomain.TaskPatch, now time.Time) error
+	UpdateByTemplateIDFromDate(ctx context.Context, templateID int64, fromDate time.Time, patch taskdomain.TaskPatch, now time.Time) error
+	Delete(ctx context.Context, id int64) error
+	DeleteByTemplateID(ctx context.Context, templateID int64) error
+	DeleteByTemplateIDFromDate(ctx context.Context, templateID int64, fromDate time.Time) error
+	List(ctx context.Context, from, to *time.Time) ([]taskdomain.Task, error)
+}
+
+type TemplateRepository interface {
+	Create(ctx context.Context, template *taskdomain.Template) (*taskdomain.Template, error)
+	GetByID(ctx context.Context, id int64) (*taskdomain.Template, error)
+	Update(ctx context.Context, template *taskdomain.Template) (*taskdomain.Template, error)
+	Delete(ctx context.Context, id int64) error
+	ListActive(ctx context.Context) ([]taskdomain.Template, error)
+}
+
+type Usecase interface {
+	Create(ctx context.Context, input CreateInput) ([]taskdomain.Task, error)
+	GetByID(ctx context.Context, id int64) (*taskdomain.Task, error)
+	Update(ctx context.Context, id int64, input UpdateInput) (*taskdomain.Task, error)
+	Delete(ctx context.Context, id int64, scope Scope) error
+	List(ctx context.Context, input ListInput) ([]taskdomain.Task, error)
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: internal\usecase\task\service.go
+Размер: 9,274 байт
+────────────────────────────────────────────────────────────────────────────────
+package task
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	taskdomain "example.com/taskservice/internal/domain/task"
+)
+
+const generationHorizon = 90 * 24 * time.Hour
+
+type Service struct {
+	repo         Repository
+	templateRepo TemplateRepository
+	now          func() time.Time
+}
+
+func NewService(repo Repository, templateRepo TemplateRepository) *Service {
+	return &Service{
+		repo:         repo,
+		templateRepo: templateRepo,
+		now:          func() time.Time { return time.Now().UTC() },
+	}
+}
+
+func (s *Service) Create(ctx context.Context, input CreateInput) ([]taskdomain.Task, error) {
+	normalized, err := validateCreateInput(input)
+	if err != nil {
+		return nil, err
+	}
+
+	if normalized.Period == nil {
+		return s.createSingleTask(ctx, normalized)
+	}
+
+	return s.createPeriodicTasks(ctx, normalized)
+}
+
+func (s *Service) createSingleTask(ctx context.Context, input CreateInput) ([]taskdomain.Task, error) {
+	now := s.now()
+	model := &taskdomain.Task{
+		Title:         input.Title,
+		Description:   input.Description,
+		Status:        input.Status,
+		ScheduledDate: input.ScheduledDate,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+
+	created, err := s.repo.Create(ctx, model)
+	if err != nil {
+		return nil, err
+	}
+
+	return []taskdomain.Task{*created}, nil
+}
+
+func (s *Service) createPeriodicTasks(ctx context.Context, input CreateInput) ([]taskdomain.Task, error) {
+	p := input.Period
+	now := s.now()
+
+	tmpl := &taskdomain.Template{
+		Title:       input.Title,
+		Description: input.Description,
+		Period: taskdomain.Period{
+			Type:       p.Type,
+			Interval:   p.Interval,
+			DayOfMonth: p.DayOfMonth,
+			Dates:      p.Dates,
+			Parity:     p.Parity,
+		},
+		StartDate: input.ScheduledDate,
+		EndDate:   p.EndDate,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	savedTmpl, err := s.templateRepo.Create(ctx, tmpl)
+	if err != nil {
+		return nil, err
+	}
+
+	initialTo := input.ScheduledDate.Add(generationHorizon)
+	if savedTmpl.EndDate != nil && savedTmpl.EndDate.Before(initialTo) {
+		initialTo = *savedTmpl.EndDate
+	}
+
+	if err := s.generateForTemplate(ctx, savedTmpl, input.ScheduledDate, initialTo, now); err != nil {
+		return nil, err
+	}
+
+	return s.repo.List(ctx, &input.ScheduledDate, &initialTo)
+}
+
+func (s *Service) ensureInstancesExist(ctx context.Context, from, to time.Time) error {
+	templates, err := s.templateRepo.ListActive(ctx)
+	if err != nil {
+		return err
+	}
+
+	now := s.now()
+
+	for i := range templates {
+		tmpl := &templates[i]
+
+		start := from
+		if tmpl.StartDate.After(start) {
+			start = tmpl.StartDate
+		}
+
+		end := to
+		if tmpl.EndDate != nil && tmpl.EndDate.Before(end) {
+			end = *tmpl.EndDate
+		}
+
+		if start.After(end) {
+			continue
+		}
+
+		if err := s.generateForTemplate(ctx, tmpl, start, end, now); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (s *Service) generateForTemplate(ctx context.Context, tmpl *taskdomain.Template, from, to time.Time, now time.Time) error {
+	dates := tmpl.Period.Compute(from, to, tmpl.StartDate)
+	if len(dates) == 0 {
+		return nil
+	}
+
+	tasks := make([]*taskdomain.Task, 0, len(dates))
+	for _, d := range dates {
+		scheduled := d
+		tasks = append(tasks, &taskdomain.Task{
+			Title:         tmpl.Title,
+			Description:   tmpl.Description,
+			Status:        taskdomain.StatusNew,
+			TemplateID:    &tmpl.ID,
+			ScheduledDate: scheduled,
+			CreatedAt:     now,
+			UpdatedAt:     now,
+		})
+	}
+
+	return s.repo.CreateBatchIgnoreDuplicates(ctx, tasks)
+}
+
+func (s *Service) GetByID(ctx context.Context, id int64) (*taskdomain.Task, error) {
+	if id <= 0 {
+		return nil, fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+	}
+
+	return s.repo.GetByID(ctx, id)
+}
+
+func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (*taskdomain.Task, error) {
+	if id <= 0 {
+		return nil, fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+	}
+
+	normalized, err := validateUpdateInput(input)
+	if err != nil {
+		return nil, err
+	}
+
+	task, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	now := s.now()
+
+	task.Title = normalized.Title
+	task.Description = normalized.Description
+	task.Status = normalized.Status
+	task.UpdatedAt = now
+
+	updated, err := s.repo.Update(ctx, task)
+	if err != nil {
+		return nil, err
+	}
+
+	if task.TemplateID != nil && normalized.Scope != ScopeThis {
+		patch := taskdomain.TaskPatch{
+			Title:       normalized.Title,
+			Description: normalized.Description,
+			Status:      normalized.Status,
+		}
+
+		switch normalized.Scope {
+		case ScopeThisAndFollowing:
+			if err := s.repo.UpdateByTemplateIDFromDate(ctx, *task.TemplateID, task.ScheduledDate, patch, now); err != nil {
+				return nil, err
+			}
+
+			if err := s.updateTemplate(ctx, *task.TemplateID, normalized.Title, normalized.Description, now); err != nil {
+				return nil, err
+			}
+
+		case ScopeAll:
+			if err := s.repo.UpdateByTemplateID(ctx, *task.TemplateID, patch, now); err != nil {
+				return nil, err
+			}
+
+			if err := s.updateTemplate(ctx, *task.TemplateID, normalized.Title, normalized.Description, now); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	return updated, nil
+}
+
+func (s *Service) updateTemplate(ctx context.Context, templateID int64, title, description string, now time.Time) error {
+	tmpl, err := s.templateRepo.GetByID(ctx, templateID)
+	if err != nil {
+		return err
+	}
+
+	tmpl.Title = title
+	tmpl.Description = description
+	tmpl.UpdatedAt = now
+
+	_, err = s.templateRepo.Update(ctx, tmpl)
+
+	return err
+}
+
+func (s *Service) Delete(ctx context.Context, id int64, scope Scope) error {
+	if id <= 0 {
+		return fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+	}
+
+	if scope == "" {
+		scope = ScopeThis
+	}
+
+	if !scope.valid() {
+		return fmt.Errorf("%w: invalid scope %q", ErrInvalidInput, scope)
+	}
+
+	task, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return err
+	}
+
+	if task.TemplateID == nil || scope == ScopeThis {
+		return s.repo.Delete(ctx, id)
+	}
+
+	templateID := *task.TemplateID
+
+	switch scope {
+	case ScopeThisAndFollowing:
+		if err := s.repo.DeleteByTemplateIDFromDate(ctx, templateID, task.ScheduledDate); err != nil {
+			return err
+		}
+
+		if err := s.truncateTemplateEndDate(ctx, templateID, task.ScheduledDate, s.now()); err != nil {
+			return err
+		}
+
+	case ScopeAll:
+		if err := s.repo.DeleteByTemplateID(ctx, templateID); err != nil {
+			return err
+		}
+
+		if err := s.templateRepo.Delete(ctx, templateID); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (s *Service) truncateTemplateEndDate(ctx context.Context, templateID int64, cutoff time.Time, now time.Time) error {
+	tmpl, err := s.templateRepo.GetByID(ctx, templateID)
+	if err != nil {
+		return err
+	}
+
+	newEnd := cutoff.AddDate(0, 0, -1)
+
+	if !newEnd.Before(tmpl.StartDate) {
+		tmpl.EndDate = &newEnd
+		tmpl.UpdatedAt = now
+		_, err = s.templateRepo.Update(ctx, tmpl)
+
+		return err
+	}
+
+	return s.templateRepo.Delete(ctx, templateID)
+}
+
+func (s *Service) List(ctx context.Context, input ListInput) ([]taskdomain.Task, error) {
+	if input.From != nil && input.To != nil {
+		if err := s.ensureInstancesExist(ctx, *input.From, *input.To); err != nil {
+			return nil, err
+		}
+	}
+
+	return s.repo.List(ctx, input.From, input.To)
+}
+
+func validateCreateInput(input CreateInput) (CreateInput, error) {
+	input.Title = strings.TrimSpace(input.Title)
+	input.Description = strings.TrimSpace(input.Description)
+
+	if input.Title == "" {
+		return CreateInput{}, fmt.Errorf("%w: title is required", ErrInvalidInput)
+	}
+
+	if input.ScheduledDate.IsZero() {
+		return CreateInput{}, fmt.Errorf("%w: scheduled_date is required", ErrInvalidInput)
+	}
+
+	input.ScheduledDate = taskdomain.TruncateToDate(input.ScheduledDate)
+
+	if input.Status == "" {
+		input.Status = taskdomain.StatusNew
+	}
+
+	if !input.Status.Valid() {
+		return CreateInput{}, fmt.Errorf("%w: invalid status", ErrInvalidInput)
+	}
+
+	if input.Period != nil {
+		period := taskdomain.Period{
+			Type:       input.Period.Type,
+			Interval:   input.Period.Interval,
+			DayOfMonth: input.Period.DayOfMonth,
+			Dates:      input.Period.Dates,
+			Parity:     input.Period.Parity,
+		}
+
+		if err := period.Valid(); err != nil {
+			return CreateInput{}, fmt.Errorf("%w: %s", ErrInvalidInput, err)
+		}
+
+		if input.Period.EndDate != nil && !input.Period.EndDate.After(input.ScheduledDate) {
+			return CreateInput{}, fmt.Errorf("%w: period end_date must be after scheduled_date", ErrInvalidInput)
+		}
+	}
+
+	return input, nil
+}
+
+func validateUpdateInput(input UpdateInput) (UpdateInput, error) {
+	input.Title = strings.TrimSpace(input.Title)
+	input.Description = strings.TrimSpace(input.Description)
+
+	if input.Title == "" {
+		return UpdateInput{}, fmt.Errorf("%w: title is required", ErrInvalidInput)
+	}
+
+	if !input.Status.Valid() {
+		return UpdateInput{}, fmt.Errorf("%w: invalid status", ErrInvalidInput)
+	}
+
+	if input.Scope == "" {
+		input.Scope = ScopeThis
+	}
+
+	if !input.Scope.valid() {
+		return UpdateInput{}, fmt.Errorf("%w: invalid scope %q", ErrInvalidInput, input.Scope)
+	}
+
+	return input, nil
+}
+
+
+================================================================================
+📁 ПАПКА: Akkato47/migrations/
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: migrations\0001_create_tasks.up.sql
+Размер: 318 байт
+────────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS tasks (
+	id BIGSERIAL PRIMARY KEY,
+	title TEXT NOT NULL,
+	description TEXT NOT NULL DEFAULT '',
+	status TEXT NOT NULL,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks (status);
+
+
+────────────────────────────────────────────────────────────────────────────────
+📄 ФАЙЛ: migrations\0002_create_task_templates_and_alter_tasks.up.sql
+Размер: 1,135 байт
+────────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS task_templates (
+    id            BIGSERIAL PRIMARY KEY,
+    title         TEXT        NOT NULL,
+    description   TEXT        NOT NULL DEFAULT '',
+    period_type   TEXT        NOT NULL,
+    period_config JSONB       NOT NULL DEFAULT '{}',
+    start_date    DATE        NOT NULL,
+    end_date      DATE,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE tasks
+    ADD COLUMN IF NOT EXISTS template_id    BIGINT REFERENCES task_templates (id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS scheduled_date DATE NOT NULL DEFAULT CURRENT_DATE;
+
+CREATE INDEX IF NOT EXISTS idx_tasks_template_id    ON tasks (template_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_scheduled_date ON tasks (scheduled_date);
+
+-- Prevents duplicate instances for the same template+date.
+-- NULL template_id (manual tasks) is exempt: NULLs are never considered equal in UNIQUE constraints.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_template_scheduled_unique
+    ON tasks (template_id, scheduled_date)
+    WHERE template_id IS NOT NULL;
+
+
+================================================================================
+СТАТИСТИКА ЭКСПОРТА
+================================================================================
+Всего обработано файлов: 23
+Всего пропущено файлов: 2
+Общий размер выходного файла: 77,098 байт
